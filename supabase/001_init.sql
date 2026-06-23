@@ -814,15 +814,25 @@ using (auth.uid() = id)
 with check (auth.uid() = id);
 
 -- Match access: user must be in match_players
+create or replace function public.is_match_participant(p_match_id uuid)
+returns boolean
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  select exists (
+    select 1
+    from public.match_players mp
+    where mp.match_id = p_match_id
+      and mp.user_id = auth.uid()
+  );
+$$;
+
 drop policy if exists "participants read matches" on public.matches;
 create policy "participants read matches"
 on public.matches for select
-using (
-  exists (
-    select 1 from public.match_players mp
-    where mp.match_id = matches.id and mp.user_id = auth.uid()
-  )
-);
+using (public.is_match_participant(matches.id));
 
 drop policy if exists "creator insert matches" on public.matches;
 create policy "creator insert matches"
@@ -832,12 +842,7 @@ with check (false);
 drop policy if exists "participants read players" on public.match_players;
 create policy "participants read players"
 on public.match_players for select
-using (
-  exists (
-    select 1 from public.match_players me
-    where me.match_id = match_players.match_id and me.user_id = auth.uid()
-  )
-);
+using (public.is_match_participant(match_players.match_id));
 
 drop policy if exists "user join self" on public.match_players;
 create policy "user join self"
@@ -847,22 +852,12 @@ with check (false);
 drop policy if exists "participants read turns" on public.match_turns;
 create policy "participants read turns"
 on public.match_turns for select
-using (
-  exists (
-    select 1 from public.match_players mp
-    where mp.match_id = match_turns.match_id and mp.user_id = auth.uid()
-  )
-);
+using (public.is_match_participant(match_turns.match_id));
 
 drop policy if exists "participants read guesses" on public.guesses;
 create policy "participants read guesses"
 on public.guesses for select
-using (
-  exists (
-    select 1 from public.match_players mp
-    where mp.match_id = guesses.match_id and mp.user_id = auth.uid()
-  )
-);
+using (public.is_match_participant(guesses.match_id));
 
 drop policy if exists "actor insert guess" on public.guesses;
 create policy "actor insert guess"

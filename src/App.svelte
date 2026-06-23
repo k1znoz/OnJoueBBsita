@@ -229,7 +229,7 @@
         coins = 0
         activeMatches = []
 
-        if (currentView === 'profile' || currentView === 'async') {
+        if (currentView === 'profile' || currentView === 'async' || currentView === 'communication') {
           currentView = 'auth'
         }
 
@@ -380,6 +380,8 @@
 
       if (loadErrors.length > 0) {
         toast = `Chargement partiel (${loadErrors.join(', ')}).`
+      } else if (toast.startsWith('Chargement partiel')) {
+        toast = ''
       }
     } catch (error) {
       toast = getErrorMessage(error, 'Erreur de chargement des donnees.')

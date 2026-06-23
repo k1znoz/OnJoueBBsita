@@ -102,20 +102,47 @@ function isMissingSessionError(error: unknown): boolean {
   return typeof message === 'string' && /auth session missing/i.test(message)
 }
 
-export async function fetchCurrentUser(): Promise<User | null> {
+function isUnauthenticatedError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false
+
+  const maybeError = error as { message?: unknown; status?: unknown; code?: unknown }
+  const message = typeof maybeError.message === 'string' ? maybeError.message.toLowerCase() : ''
+  const status = typeof maybeError.status === 'number' ? maybeError.status : null
+  const code = typeof maybeError.code === 'string' ? maybeError.code.toLowerCase() : ''
+
+  return (
+    status === 401 ||
+    status === 403 ||
+    isMissingSessionError(error) ||
+    /jwt|token|session|forbidden|unauthori[sz]ed/.test(message) ||
+    /jwt|token|session|forbidden|unauthori[sz]ed/.test(code)
+  )
+}
+
+async function getSessionUser(): Promise<User | null> {
   if (!supabase) return null
 
   const {
-    data: { user },
+    data: { session },
     error,
-  } = await supabase.auth.getUser()
+  } = await supabase.auth.getSession()
 
   if (error) {
-    if (isMissingSessionError(error)) return null
+    if (isUnauthenticatedError(error)) return null
     throw error
   }
 
+  return session?.user ?? null
+}
+
+async function requireSessionUser(): Promise<User> {
+  const user = await getSessionUser()
+  if (!user) throw new Error('Authentication required')
   return user
+}
+
+export async function fetchCurrentUser(): Promise<User | null> {
+  return getSessionUser()
 }
 
 export async function signUpWithEmail({ email, password, handle }: SignUpParams): Promise<AuthPayload> {
@@ -183,15 +210,7 @@ export async function fetchDailyChallenge(): Promise<DailyChallenge | null> {
 export async function fetchMyProfile(): Promise<UserProfile | null> {
   if (!supabase) return null
 
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser()
-
-  if (authError) {
-    if (isMissingSessionError(authError)) return null
-    throw authError
-  }
+  const user = await getSessionUser()
   if (!user) return null
 
   const { data, error } = await supabase
@@ -207,13 +226,7 @@ export async function fetchMyProfile(): Promise<UserProfile | null> {
 export async function updateMyProfile({ handle }: UpdateProfileParams): Promise<UserProfile> {
   if (!supabase) throw new Error('Supabase is not configured')
 
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser()
-
-  if (authError) throw authError
-  if (!user) throw new Error('Authentication required')
+  const user = await requireSessionUser()
 
   const cleanHandle = (handle ?? '').trim().toLowerCase().replace(/[^a-z0-9_]/g, '')
   if (!cleanHandle) throw new Error('Handle invalide')
@@ -232,15 +245,7 @@ export async function updateMyProfile({ handle }: UpdateProfileParams): Promise<
 export async function fetchMyMatches(): Promise<MatchSummary[]> {
   if (!supabase) return []
 
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser()
-
-  if (authError) {
-    if (isMissingSessionError(authError)) return []
-    throw authError
-  }
+  const user = await getSessionUser()
   if (!user) return []
 
   const { data, error } = await supabase
@@ -260,13 +265,7 @@ export async function fetchMyMatches(): Promise<MatchSummary[]> {
 export async function createMatch({ modeId, maxTurns = 10 }: CreateMatchParams): Promise<{ id: string } & Record<string, unknown>> {
   if (!supabase) throw new Error('Supabase is not configured')
 
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser()
-
-  if (authError) throw authError
-  if (!user) throw new Error('Authentication required')
+  await requireSessionUser()
 
   const idempotencyKey = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`
 
@@ -283,13 +282,7 @@ export async function createMatch({ modeId, maxTurns = 10 }: CreateMatchParams):
 export async function joinOrCreateDuel({ modeId, maxTurns = 10 }: CreateMatchParams): Promise<{ id: string } & Record<string, unknown>> {
   if (!supabase) throw new Error('Supabase is not configured')
 
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser()
-
-  if (authError) throw authError
-  if (!user) throw new Error('Authentication required')
+  await requireSessionUser()
 
   const idempotencyKey = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`
 
@@ -325,13 +318,7 @@ export async function createDuelInvite({
 }: CreateDuelInviteParams): Promise<{ id: string } & Record<string, unknown>> {
   if (!supabase) throw new Error('Supabase is not configured')
 
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser()
-
-  if (authError) throw authError
-  if (!user) throw new Error('Authentication required')
+  await requireSessionUser()
 
   const idempotencyKey = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`
 
@@ -369,12 +356,7 @@ export async function fetchDuelInvitations(): Promise<DuelInvitation[]> {
 export async function fetchMessagesWithUser(peerUserId: string): Promise<PlayerMessage[]> {
   if (!supabase) return []
 
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser()
-
-  if (authError) throw authError
+  const user = await getSessionUser()
   if (!user) return []
 
   const { data, error } = await supabase
@@ -392,13 +374,7 @@ export async function fetchMessagesWithUser(peerUserId: string): Promise<PlayerM
 export async function sendPlayerMessage(recipientUserId: string, body: string): Promise<PlayerMessage> {
   if (!supabase) throw new Error('Supabase is not configured')
 
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser()
-
-  if (authError) throw authError
-  if (!user) throw new Error('Authentication required')
+  const user = await requireSessionUser()
 
   const cleanBody = body.trim()
   if (!cleanBody) throw new Error('Message vide')

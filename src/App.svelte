@@ -2,21 +2,29 @@
   import { onMount } from 'svelte'
   import type { User } from '@supabase/supabase-js'
   import {
+    acceptDuelInvite,
+    createDuelInvite,
     createMatch,
     fetchCurrentUser,
     fetchActiveGameModes,
     fetchDailyChallenge,
+    fetchDuelInvitations,
+    fetchMatchGuesses,
+    fetchMessagesWithUser,
+    fetchOpponentCandidates,
+    joinOrCreateDuel,
     fetchMyMatches,
     fetchMyProfile,
     signInWithEmail,
     signOutCurrentUser,
     signUpWithEmail,
+    sendPlayerMessage,
     submitGuess,
     updateMyProfile,
   } from './lib/supabase/services'
   import { hasSupabaseConfig, supabase } from './lib/supabase/client'
 
-  type View = 'lobby' | 'modes' | 'async' | 'auth' | 'profile'
+  type View = 'lobby' | 'modes' | 'async' | 'communication' | 'auth' | 'profile'
 
   type Tone = 'primary' | 'secondary' | 'tertiary' | 'error' | 'neutral'
 
@@ -43,6 +51,7 @@
     tone: 'primary' | 'secondary' | 'tertiary'
     route: 'async' | null
     intense?: boolean
+    queueType: 'solo' | 'duel'
   }
 
   type MatchRow = {
@@ -51,6 +60,7 @@
     turn_number: number | null
     max_turns: number | null
     mode_id: string
+    created_by_user_id: string
     updated_at: string | null
   }
 
@@ -61,6 +71,41 @@
     tries: string
     progress: number
     status: 'En attente' | 'A votre tour'
+    state: string
+    maxTurns: number
+    turnNumber: number
+    createdByUserId: string
+  }
+
+  type OpponentCandidate = {
+    id: string
+    handle: string
+  }
+
+  type DuelInvitation = {
+    match_id: string
+    mode_id: string
+    mode_title: string
+    inviter_id: string
+    inviter_handle: string
+    created_at: string
+  }
+
+  type PlayerMessage = {
+    id: string
+    sender_user_id: string
+    recipient_user_id: string
+    body: string
+    created_at: string
+  }
+
+  type GuessHistoryEntry = {
+    id: string
+    row: string[]
+    exactHits: number
+    partialHits: number
+    isWin: boolean
+    createdAt: string
   }
 
   type DailyChallengeRow = {
@@ -107,6 +152,15 @@
 
   let modeCards: ModeCard[] = []
   let activeMatches: ActiveMatchCard[] = []
+  let opponentCandidates: OpponentCandidate[] = []
+  let duelInvitations: DuelInvitation[] = []
+  let selectedChatUserId = ''
+  let chatMessages: PlayerMessage[] = []
+  let chatInput = ''
+  let communicationLoading = false
+  let sendingMessage = false
+  let selectedOpponentId = ''
+  let duelLoading = false
 
   const asyncPalette: PalettePeg[] = [
     { symbol: 'circle', tone: 'primary' },
@@ -137,11 +191,14 @@
   let asyncRow: Array<PalettePeg | null> = [null, null, null, null]
   let asyncSlot = 0
   let asyncAttempt = 1
+  let guessHistory: GuessHistoryEntry[] = []
+  let isSubmittingGuess = false
 
   const viewTitle: Record<View, string> = {
     lobby: 'Lobby',
     modes: 'Modes',
     async: 'Session',
+    communication: 'Communication',
     auth: 'Compte',
     profile: 'Profil',
   }
@@ -150,6 +207,16 @@
     hydrateApp()
 
     if (!supabase) return
+
+    const refreshTimer = setInterval(() => {
+      if (currentUser) {
+        hydrateApp(currentMatchId)
+
+        if (currentView === 'communication') {
+          void loadCommunication()
+        }
+      }
+    }, 12000)
 
     const {
       data: { subscription },
@@ -173,9 +240,44 @@
     })
 
     return () => {
+      clearInterval(refreshTimer)
       subscription.unsubscribe()
     }
   })
+
+  function normalizeGuessRow(payload: unknown): string[] {
+    if (!payload || typeof payload !== 'object') return []
+
+    const maybeRow = (payload as { row?: unknown }).row
+    if (!Array.isArray(maybeRow)) return []
+
+    return maybeRow.map((item) => String(item ?? '?'))
+  }
+
+  async function loadMatchHistory(matchId: string | null) {
+    if (!matchId || !currentUser) {
+      guessHistory = []
+      asyncAttempt = 1
+      return
+    }
+
+    try {
+      const guesses = await withTimeout(fetchMatchGuesses(matchId), 7000, [])
+
+      guessHistory = guesses.map((guess) => ({
+        id: guess.id,
+        row: normalizeGuessRow(guess.payload),
+        exactHits: guess.exact_hits,
+        partialHits: guess.partial_hits,
+        isWin: guess.is_win,
+        createdAt: guess.created_at,
+      }))
+
+      asyncAttempt = guessHistory.length + 1
+    } catch {
+      guessHistory = []
+    }
+  }
 
   async function hydrateApp(preferredMatchId: string | null = null) {
     if (!hasSupabaseConfig) {
@@ -197,6 +299,10 @@
         withTimeout(fetchDailyChallenge(), 7000, null),
       ])
 
+      const opponentRes = currentUser
+        ? await Promise.allSettled([withTimeout(fetchOpponentCandidates(), 7000, [] as OpponentCandidate[])])
+        : [{ status: 'fulfilled', value: [] }] as const
+
       const profile = (profileRes.status === 'fulfilled' ? profileRes.value : null) as UserProfile | null
       const modes = (modesRes.status === 'fulfilled' ? modesRes.value : []) as GameModeRow[]
       const matches = (matchesRes.status === 'fulfilled' ? matchesRes.value : []) as Array<MatchRow | MatchRow[]>
@@ -206,9 +312,18 @@
       coins = profile?.credits ?? 0
       dailyChallenge = challenge
       profileHandle = profile?.handle ?? ''
+      opponentCandidates = (opponentRes[0].status === 'fulfilled' ? opponentRes[0].value : []) as OpponentCandidate[]
+
+      if (!selectedOpponentId || !opponentCandidates.some((op) => op.id === selectedOpponentId)) {
+        selectedOpponentId = opponentCandidates[0]?.id ?? ''
+      }
+
+      if (!selectedChatUserId || !opponentCandidates.some((op) => op.id === selectedChatUserId)) {
+        selectedChatUserId = opponentCandidates[0]?.id ?? ''
+      }
 
       modeCards = (modes ?? [])
-        .filter((mode) => mode.code?.includes('async') || mode.code?.includes('classic'))
+        .filter((mode) => mode.code?.includes('async') || mode.code?.includes('classic') || mode.code?.includes('duel'))
         .map((mode, index): ModeCard => ({
         modeId: mode.id,
         code: mode.code,
@@ -218,6 +333,7 @@
         cta: 'Jouer',
         tone: modeTones[index % modeTones.length],
         route: 'async',
+        queueType: mode.code?.includes('duel') ? 'duel' : 'solo',
       }))
 
       const modeById = new Map((modes ?? []).map((mode) => [mode.id, mode.title]))
@@ -237,7 +353,11 @@
           mode: modeById.get(match.mode_id) ?? 'Mode',
           tries: `${turnNumber}/${maxTurns}`,
           progress,
-          status: match.state === 'waiting_turn' ? 'En attente' : 'A votre tour',
+          status: match.state === 'waiting_turn' || match.state === 'waiting_opponent' ? 'En attente' : 'A votre tour',
+          state: match.state,
+          maxTurns,
+          turnNumber,
+          createdByUserId: match.created_by_user_id,
         }
       })
 
@@ -246,6 +366,11 @@
         : false
 
       currentMatchId = hasPreferredMatch ? preferredMatchId : (activeMatches[0]?.id ?? preferredMatchId ?? null)
+      await loadMatchHistory(currentMatchId)
+
+      if (currentUser && currentView === 'communication') {
+        await loadCommunication()
+      }
 
       const loadErrors = []
       if (profileRes.status === 'rejected') loadErrors.push('profil')
@@ -264,7 +389,7 @@
   }
 
   function goTo(view: View) {
-    if ((view === 'async' || view === 'profile') && !currentUser) {
+    if ((view === 'async' || view === 'profile' || view === 'communication') && !currentUser) {
       toast = 'Connecte-toi pour acceder a cet espace.'
       currentView = 'auth'
       return
@@ -278,6 +403,82 @@
 
     currentView = view
     toast = ''
+
+    if (view === 'communication') {
+      void loadCommunication()
+    }
+  }
+
+  async function loadCommunication() {
+    if (!currentUser) return
+
+    try {
+      communicationLoading = true
+      duelInvitations = await withTimeout(fetchDuelInvitations(), 7000, [])
+
+      if (selectedChatUserId) {
+        chatMessages = await withTimeout(fetchMessagesWithUser(selectedChatUserId), 7000, [])
+      } else {
+        chatMessages = []
+      }
+    } catch (error) {
+      toast = getErrorMessage(error, 'Chargement communication impossible.')
+    } finally {
+      communicationLoading = false
+    }
+  }
+
+  async function acceptInvitation(invite: DuelInvitation) {
+    try {
+      await acceptDuelInvite(invite.match_id)
+      currentMatchId = invite.match_id
+      await hydrateApp(invite.match_id)
+      await loadCommunication()
+      toast = 'Invitation acceptee.'
+      goTo('async')
+    } catch (error) {
+      toast = getErrorMessage(error, 'Acceptation impossible.')
+    }
+  }
+
+  async function refreshChatThread() {
+    if (!selectedChatUserId || !currentUser) {
+      chatMessages = []
+      return
+    }
+
+    try {
+      communicationLoading = true
+      chatMessages = await withTimeout(fetchMessagesWithUser(selectedChatUserId), 7000, [])
+    } catch (error) {
+      toast = getErrorMessage(error, 'Chargement des messages impossible.')
+    } finally {
+      communicationLoading = false
+    }
+  }
+
+  async function sendMessageToPlayer() {
+    if (sendingMessage) return
+    if (!selectedChatUserId) {
+      toast = 'Choisis un joueur pour discuter.'
+      return
+    }
+
+    if (!chatInput.trim()) {
+      toast = 'Message vide.'
+      return
+    }
+
+    try {
+      sendingMessage = true
+      await sendPlayerMessage(selectedChatUserId, chatInput)
+      chatInput = ''
+      await refreshChatThread()
+    } catch (error) {
+      toast = getErrorMessage(error, 'Envoi du message impossible.')
+    } finally {
+      sendingMessage = false
+    }
   }
 
   async function handleSignUp() {
@@ -386,12 +587,69 @@
     if (!card?.modeId) return
 
     try {
-      const match = await createMatch({ modeId: card.modeId })
+      const isDuel = card.code?.includes('duel')
+      const match = isDuel
+        ? await joinOrCreateDuel({ modeId: card.modeId })
+        : await createMatch({ modeId: card.modeId })
+
       currentMatchId = match.id
       await hydrateApp(match.id)
+
+      const matchState = (match.state as string | undefined) ?? ''
+      if (isDuel && matchState === 'waiting_opponent') {
+        toast = 'Duel cree. En attente d\'un adversaire...'
+      }
+
       goTo(card.route ?? 'async')
     } catch (error) {
       toast = getErrorMessage(error, 'Impossible de creer la partie.')
+    }
+  }
+
+  async function createDuelChallenge(card: ModeCard) {
+    if (duelLoading) return
+
+    if (!currentUser) {
+      toast = 'Connecte-toi pour creer une partie.'
+      goTo('auth')
+      return
+    }
+
+    if (!selectedOpponentId) {
+      toast = 'Choisis un joueur a defier.'
+      return
+    }
+
+    try {
+      duelLoading = true
+      const match = await createDuelInvite({
+        modeId: card.modeId,
+        opponentId: selectedOpponentId,
+      })
+
+      currentMatchId = match.id
+      await hydrateApp(match.id)
+      toast = 'Invitation envoyee.'
+      goTo('async')
+    } catch (error) {
+      toast = getErrorMessage(error, 'Invitation impossible.')
+    } finally {
+      duelLoading = false
+    }
+  }
+
+  async function openOrAcceptMatch(match: ActiveMatchCard) {
+    currentMatchId = match.id
+
+    try {
+      if (match.state === 'waiting_opponent' && currentUser && currentUser.id !== match.createdByUserId) {
+        await acceptDuelInvite(match.id)
+      }
+
+      await hydrateApp(match.id)
+      goTo('async')
+    } catch (error) {
+      toast = getErrorMessage(error, 'Impossible d\'ouvrir la partie.')
     }
   }
 
@@ -406,6 +664,8 @@
   }
 
   async function submitAsyncRow() {
+    if (isSubmittingGuess) return
+
     if (!currentUser) {
       toast = 'Connecte-toi pour jouer.'
       goTo('auth')
@@ -422,18 +682,37 @@
       return
     }
 
+    const currentMatch = activeMatches.find((match) => match.id === currentMatchId)
+    if (currentMatch && currentMatch.state === 'waiting_opponent') {
+      toast = 'En attente d\'un adversaire pour commencer le duel.'
+      return
+    }
+
+    if (currentMatch && currentMatch.state === 'completed') {
+      toast = 'Cette partie est terminee.'
+      return
+    }
+
+    if (currentMatch && guessHistory.length >= currentMatch.maxTurns) {
+      toast = 'Nombre maximum de tours atteint.'
+      return
+    }
+
     try {
+      isSubmittingGuess = true
       await submitGuess({
         matchId: currentMatchId,
         payload: { row: asyncRow.map((peg) => peg?.symbol ?? null) },
       })
 
-      asyncAttempt += 1
       asyncRow = [null, null, null, null]
       asyncSlot = 0
       toast = ''
+      await hydrateApp(currentMatchId)
     } catch (error) {
       toast = getErrorMessage(error, 'Soumission impossible.')
+    } finally {
+      isSubmittingGuess = false
     }
   }
 
@@ -524,12 +803,13 @@
               <button
                 type="button"
                 class="btn {match.status === 'En attente' ? 'btn-ghost' : 'btn-primary'}"
-                on:click={() => {
-                  currentMatchId = match.id
-                  goTo('async')
-                }}
+                on:click={() => openOrAcceptMatch(match)}
               >
-                {match.status === 'En attente' ? 'WAITING' : 'RESUME'}
+                {match.state === 'waiting_opponent' && currentUser && currentUser.id !== match.createdByUserId
+                  ? 'ACCEPTER'
+                  : match.status === 'En attente'
+                    ? 'WAITING'
+                    : 'RESUME'}
               </button>
             </article>
           {/each}
@@ -549,18 +829,45 @@
           <article class="empty-state glass-panel">Aucun mode publie.</article>
         {:else}
           {#each modeCards as card}
-            <button
-              type="button"
-              class={`mode-card glass-panel ${card.intense ? 'mode-card-intense' : ''}`}
-              on:click={() => chooseMode(card)}
-            >
+            <article class={`mode-card glass-panel ${card.intense ? 'mode-card-intense' : ''}`}>
+              <div class="mode-head">
+                <span class={`mode-badge ${card.queueType === 'duel' ? 'mode-badge-duel' : 'mode-badge-solo'}`}>
+                  {card.queueType === 'duel' ? '1V1' : 'SOLO'}
+                </span>
+              </div>
               <span class={`mode-icon tone-${card.tone}`}>
                 <span class="material-symbols-outlined">{card.icon}</span>
               </span>
               <h4>{card.title}</h4>
               <p>{card.description}</p>
-              <strong>{card.cta} -></strong>
-            </button>
+
+              {#if card.queueType === 'duel'}
+                <div class="duel-controls">
+                  <label class="field-label" for="duel-opponent">Adversaire</label>
+                  <select id="duel-opponent" class="input-field" bind:value={selectedOpponentId}>
+                    {#if opponentCandidates.length === 0}
+                      <option value="">Aucun joueur disponible</option>
+                    {:else}
+                      {#each opponentCandidates as opponent}
+                        <option value={opponent.id}>{opponent.handle}</option>
+                      {/each}
+                    {/if}
+                  </select>
+                  <button
+                    type="button"
+                    class="btn btn-primary"
+                    disabled={duelLoading || opponentCandidates.length === 0}
+                    on:click={() => createDuelChallenge(card)}
+                  >
+                    {duelLoading ? 'Invitation...' : 'Defier'}
+                  </button>
+                </div>
+              {:else}
+                <button type="button" class="btn btn-primary" on:click={() => chooseMode(card)}>
+                  {card.cta} ->
+                </button>
+              {/if}
+            </article>
           {/each}
         {/if}
       </section>
@@ -579,6 +886,25 @@
       </section>
 
       <section class="guess-history glass-panel">
+        {#if guessHistory.length > 0}
+          {#each guessHistory as guess, index}
+            <article class="guess-row board-item">
+              <small>{index + 1}</small>
+              <div class="guess-pegs">
+                {#each guess.row as value}
+                  <span class="slot"><span class="food">{value}</span></span>
+                {/each}
+              </div>
+              <div class="mini-grid">
+                <span>{guess.exactHits}</span>
+                <span>{guess.partialHits}</span>
+                <span>{guess.isWin ? 'WIN' : ''}</span>
+                <span></span>
+              </div>
+            </article>
+          {/each}
+        {/if}
+
         <article class="guess-row current board-item">
           <small>{asyncAttempt}</small>
           <div class="guess-pegs">
@@ -602,7 +928,7 @@
         </article>
       </section>
 
-      <button type="button" class="btn btn-primary wide" on:click={submitAsyncRow}>
+      <button type="button" class="btn btn-primary wide" disabled={isSubmittingGuess} on:click={submitAsyncRow}>
         SOUMETTRE
         <span class="material-symbols-outlined">arrow_forward</span>
       </button>
@@ -619,6 +945,82 @@
               </span>
             </button>
           {/each}
+        </div>
+      </section>
+    {/if}
+
+    {#if currentView === 'communication'}
+      <section class="section-head intro">
+        <h3>Communication</h3>
+        <p>Invitations duel et messages entre joueurs.</p>
+      </section>
+
+      <section class="account-panel glass-panel">
+        <h4>Invitations recues</h4>
+        {#if communicationLoading}
+          <article class="empty-state">Chargement...</article>
+        {:else if duelInvitations.length === 0}
+          <article class="empty-state">Aucune invitation en attente.</article>
+        {:else}
+          <div class="stack">
+            {#each duelInvitations as invite}
+              <article class="match-card glass-panel">
+                <div class="match-head">
+                  <div>
+                    <h4>{invite.mode_title}</h4>
+                    <p>Invite par {invite.inviter_handle}</p>
+                  </div>
+                  <span class="status-chip status-wait">Invitation</span>
+                </div>
+                <button type="button" class="btn btn-primary" on:click={() => acceptInvitation(invite)}>
+                  Accepter
+                </button>
+              </article>
+            {/each}
+          </div>
+        {/if}
+      </section>
+
+      <section class="account-panel glass-panel">
+        <h4>Messages prives</h4>
+        <div class="duel-controls">
+          <label class="field-label" for="chat-user">Joueur</label>
+          <select id="chat-user" class="input-field" bind:value={selectedChatUserId} on:change={refreshChatThread}>
+            {#if opponentCandidates.length === 0}
+              <option value="">Aucun joueur disponible</option>
+            {:else}
+              {#each opponentCandidates as opponent}
+                <option value={opponent.id}>{opponent.handle}</option>
+              {/each}
+            {/if}
+          </select>
+        </div>
+
+        <div class="chat-thread glass-panel">
+          {#if chatMessages.length === 0}
+            <article class="empty-state">Aucun message.</article>
+          {:else}
+            {#each chatMessages as message}
+              <article class={`chat-message ${currentUser && message.sender_user_id === currentUser.id ? 'chat-own' : 'chat-peer'}`}>
+                <p>{message.body}</p>
+                <small>{new Date(message.created_at).toLocaleString('fr-FR')}</small>
+              </article>
+            {/each}
+          {/if}
+        </div>
+
+        <div class="duel-controls">
+          <label class="field-label" for="chat-input">Message</label>
+          <textarea
+            id="chat-input"
+            class="input-field chat-input"
+            rows="3"
+            bind:value={chatInput}
+            placeholder="Ecris ton message..."
+          ></textarea>
+          <button type="button" class="btn btn-primary" disabled={sendingMessage} on:click={sendMessageToPlayer}>
+            {sendingMessage ? 'Envoi...' : 'Envoyer'}
+          </button>
         </div>
       </section>
     {/if}
@@ -700,6 +1102,10 @@
     <button type="button" class={currentView === 'async' ? 'active' : ''} on:click={() => goTo('async')}>
       <span class="material-symbols-outlined">history</span>
       <span>Logs</span>
+    </button>
+    <button type="button" class={currentView === 'communication' ? 'active' : ''} on:click={() => goTo('communication')}>
+      <span class="material-symbols-outlined">forum</span>
+      <span>Comms</span>
     </button>
     <button type="button" class={currentView === 'profile' || currentView === 'auth' ? 'active' : ''} on:click={() => goTo(currentUser ? 'profile' : 'auth')}>
       <span class="material-symbols-outlined">person</span>

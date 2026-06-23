@@ -438,6 +438,22 @@ textarea {
   color: var(--coral);
 }
 
+.status-done {
+  border-color: rgba(255, 191, 0, 0.4);
+  color: var(--amber-soft);
+}
+
+.match-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.match-actions .btn {
+  flex: 1;
+  min-width: 120px;
+}
+
 .progress-top {
   display: flex;
   justify-content: space-between;

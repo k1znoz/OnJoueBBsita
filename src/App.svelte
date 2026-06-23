@@ -3,8 +3,10 @@
   import type { User } from '@supabase/supabase-js'
   import {
     acceptDuelInvite,
+    cancelMatch,
     createDuelInvite,
     createMatch,
+    deleteMatch,
     fetchCurrentUser,
     fetchActiveGameModes,
     fetchDailyChallenge,
@@ -70,7 +72,7 @@
     mode: string
     tries: string
     progress: number
-    status: 'En attente' | 'A votre tour'
+    status: 'En attente' | 'A votre tour' | 'Terminee'
     state: string
     maxTurns: number
     turnNumber: number
@@ -159,6 +161,7 @@
   let chatInput = ''
   let communicationLoading = false
   let sendingMessage = false
+  let managingMatchId: string | null = null
   let selectedOpponentId = ''
   let duelLoading = false
 
@@ -346,6 +349,8 @@
         const maxTurns = match.max_turns || 1
         const turnNumber = match.turn_number || 1
         const progress = Math.max(0, Math.min(100, Math.round((turnNumber / maxTurns) * 100)))
+        const isDone = match.state === 'completed' || match.state === 'canceled' || match.state === 'expired'
+        const isWaiting = match.state === 'waiting_turn' || match.state === 'waiting_opponent'
 
         return {
           id: match.id,
@@ -353,7 +358,7 @@
           mode: modeById.get(match.mode_id) ?? 'Mode',
           tries: `${turnNumber}/${maxTurns}`,
           progress,
-          status: match.state === 'waiting_turn' || match.state === 'waiting_opponent' ? 'En attente' : 'A votre tour',
+          status: isDone ? 'Terminee' : isWaiting ? 'En attente' : 'A votre tour',
           state: match.state,
           maxTurns,
           turnNumber,
@@ -655,6 +660,44 @@
     }
   }
 
+  function canCancelMatch(match: ActiveMatchCard): boolean {
+    if (!currentUser) return false
+    if (match.createdByUserId !== currentUser.id) return false
+    return ['draft', 'active', 'waiting_turn', 'waiting_opponent'].includes(match.state)
+  }
+
+  function canDeleteMatch(match: ActiveMatchCard): boolean {
+    if (!currentUser) return false
+    if (match.createdByUserId !== currentUser.id) return false
+    return ['completed', 'canceled', 'expired'].includes(match.state)
+  }
+
+  async function manageMatch(match: ActiveMatchCard, action: 'cancel' | 'delete') {
+    if (managingMatchId) return
+
+    try {
+      managingMatchId = match.id
+
+      if (action === 'cancel') {
+        await cancelMatch(match.id)
+        toast = 'Partie annulee.'
+      } else {
+        await deleteMatch(match.id)
+        if (currentMatchId === match.id) {
+          currentMatchId = null
+          guessHistory = []
+        }
+        toast = 'Partie supprimee.'
+      }
+
+      await hydrateApp(currentMatchId)
+    } catch (error) {
+      toast = getErrorMessage(error, 'Action impossible sur la partie.')
+    } finally {
+      managingMatchId = null
+    }
+  }
+
   function placeAsyncPeg(peg: PalettePeg) {
     asyncRow[asyncSlot] = peg
     asyncRow = [...asyncRow]
@@ -778,7 +821,7 @@
       </section>
 
       <section class="section-head">
-        <h3>Parties actives</h3>
+        <h3>Mes parties</h3>
         <button type="button" class="btn btn-ghost" on:click={() => goTo('modes')}>Voir les modes</button>
       </section>
 
@@ -786,7 +829,7 @@
         {#if isLoading}
           <article class="empty-state glass-panel">Chargement...</article>
         {:else if activeMatches.length === 0}
-          <article class="empty-state glass-panel">Aucune partie active.</article>
+          <article class="empty-state glass-panel">Aucune partie.</article>
         {:else}
           {#each activeMatches as match}
             <article class="match-card glass-panel">
@@ -795,24 +838,50 @@
                   <h4>{match.name}</h4>
                   <p>{match.mode}</p>
                 </div>
-                <span class={`status-chip ${match.status === 'En attente' ? 'status-wait' : 'status-turn'}`}>{match.status}</span>
+                <span class={`status-chip ${match.status === 'En attente' ? 'status-wait' : match.status === 'Terminee' ? 'status-done' : 'status-turn'}`}>{match.status}</span>
               </div>
               <div class="progress-top">
                 <small>Progression</small>
                 <small>Essai {match.tries}</small>
               </div>
               <div class="progress"><span style={`width:${match.progress}%`}></span></div>
-              <button
-                type="button"
-                class="btn {match.status === 'En attente' ? 'btn-ghost' : 'btn-primary'}"
-                on:click={() => openOrAcceptMatch(match)}
-              >
-                {match.state === 'waiting_opponent' && currentUser && currentUser.id !== match.createdByUserId
-                  ? 'ACCEPTER'
-                  : match.status === 'En attente'
-                    ? 'WAITING'
-                    : 'RESUME'}
-              </button>
+              <div class="match-actions">
+                <button
+                  type="button"
+                  class="btn {match.status === 'En attente' ? 'btn-ghost' : 'btn-primary'}"
+                  on:click={() => openOrAcceptMatch(match)}
+                >
+                  {match.state === 'waiting_opponent' && currentUser && currentUser.id !== match.createdByUserId
+                    ? 'ACCEPTER'
+                    : match.status === 'En attente'
+                      ? 'WAITING'
+                      : match.status === 'Terminee'
+                        ? 'VOIR'
+                        : 'RESUME'}
+                </button>
+
+                {#if canCancelMatch(match)}
+                  <button
+                    type="button"
+                    class="btn btn-ghost"
+                    disabled={managingMatchId === match.id}
+                    on:click={() => manageMatch(match, 'cancel')}
+                  >
+                    {managingMatchId === match.id ? '...' : 'ANNULER'}
+                  </button>
+                {/if}
+
+                {#if canDeleteMatch(match)}
+                  <button
+                    type="button"
+                    class="btn btn-ghost"
+                    disabled={managingMatchId === match.id}
+                    on:click={() => manageMatch(match, 'delete')}
+                  >
+                    {managingMatchId === match.id ? '...' : 'SUPPRIMER'}
+                  </button>
+                {/if}
+              </div>
             </article>
           {/each}
         {/if}

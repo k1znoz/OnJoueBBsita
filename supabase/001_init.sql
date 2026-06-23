@@ -284,6 +284,7 @@ declare
   v_guess public.guesses;
   v_next_user_id uuid;
   v_allowed_symbols text[] := array['circle', 'pentagon', 'square', 'change_history', 'star', 'diamond'];
+  v_secret_symbols text[] := array[]::text[];
   v_guess_row jsonb;
   v_secret_row jsonb;
   v_exact_hits integer := 0;
@@ -344,11 +345,25 @@ begin
   begin
     v_secret_row := coalesce(v_match.secret_code_hash, '[]')::jsonb;
   exception when others then
-    raise exception 'Match secret code unavailable';
+    v_secret_row := '[]'::jsonb;
   end;
 
   if jsonb_typeof(v_secret_row) is distinct from 'array' or jsonb_array_length(v_secret_row) <> 4 then
-    raise exception 'Match secret code unavailable';
+    v_secret_symbols := array[]::text[];
+
+    for v_i in 1..4 loop
+      v_secret_symbols := v_secret_symbols || v_allowed_symbols[
+        1 + floor(random() * array_length(v_allowed_symbols, 1))::integer
+      ];
+    end loop;
+
+    v_secret_row := to_jsonb(v_secret_symbols);
+
+    update public.matches
+    set
+      secret_code_hash = v_secret_row::text,
+      updated_at = now()
+    where id = p_match_id;
   end if;
 
   for v_i in 0..3 loop
@@ -746,6 +761,82 @@ as $$
   order by m.created_at desc;
 $$;
 
+create or replace function public.cancel_match(
+  p_match_id uuid
+)
+returns public.matches
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid;
+  v_match public.matches;
+begin
+  v_uid := auth.uid();
+
+  if v_uid is null then
+    raise exception 'Authentication required';
+  end if;
+
+  select * into v_match
+  from public.matches m
+  where m.id = p_match_id
+  for update;
+
+  if v_match.id is null then
+    raise exception 'Match not found';
+  end if;
+
+  if v_match.created_by_user_id <> v_uid then
+    raise exception 'Only creator can cancel this match';
+  end if;
+
+  if v_match.state in ('completed', 'canceled', 'expired') then
+    return v_match;
+  end if;
+
+  update public.matches
+  set
+    state = 'canceled',
+    ended_at = coalesce(ended_at, now()),
+    current_turn_user_id = null,
+    updated_at = now()
+  where id = p_match_id
+  returning * into v_match;
+
+  return v_match;
+end;
+$$;
+
+create or replace function public.delete_match(
+  p_match_id uuid
+)
+returns boolean
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid;
+  v_deleted integer;
+begin
+  v_uid := auth.uid();
+
+  if v_uid is null then
+    raise exception 'Authentication required';
+  end if;
+
+  delete from public.matches m
+  where m.id = p_match_id
+    and m.created_by_user_id = v_uid
+    and m.state in ('completed', 'canceled', 'expired');
+
+  get diagnostics v_deleted = row_count;
+  return v_deleted > 0;
+end;
+$$;
+
 revoke execute on function public.create_match(uuid, integer, text) from public;
 revoke execute on function public.submit_guess(uuid, jsonb) from public;
 revoke execute on function public.join_or_create_duel(uuid, integer, text) from public;
@@ -753,6 +844,8 @@ revoke execute on function public.list_duel_opponents() from public;
 revoke execute on function public.create_duel_invite(uuid, uuid, integer, text) from public;
 revoke execute on function public.accept_duel_invite(uuid) from public;
 revoke execute on function public.list_duel_invites() from public;
+revoke execute on function public.cancel_match(uuid) from public;
+revoke execute on function public.delete_match(uuid) from public;
 grant execute on function public.create_match(uuid, integer, text) to authenticated;
 grant execute on function public.submit_guess(uuid, jsonb) to authenticated;
 grant execute on function public.join_or_create_duel(uuid, integer, text) to authenticated;
@@ -760,6 +853,8 @@ grant execute on function public.list_duel_opponents() to authenticated;
 grant execute on function public.create_duel_invite(uuid, uuid, integer, text) to authenticated;
 grant execute on function public.accept_duel_invite(uuid) to authenticated;
 grant execute on function public.list_duel_invites() to authenticated;
+grant execute on function public.cancel_match(uuid) to authenticated;
+grant execute on function public.delete_match(uuid) to authenticated;
 
 -- Explicit privileges for PostgREST roles.
 grant usage on schema public to anon, authenticated;

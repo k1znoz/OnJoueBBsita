@@ -344,6 +344,32 @@ export async function acceptDuelInvite(matchId: string): Promise<{ id: string } 
   return match as { id: string } & Record<string, unknown>
 }
 
+export async function cancelMatch(matchId: string): Promise<{ id: string } & Record<string, unknown>> {
+  if (!supabase) throw new Error('Supabase is not configured')
+
+  await requireSessionUser()
+
+  const { data: match, error } = await supabase.rpc('cancel_match', {
+    p_match_id: matchId,
+  })
+
+  if (error) throw error
+  return match as { id: string } & Record<string, unknown>
+}
+
+export async function deleteMatch(matchId: string): Promise<boolean> {
+  if (!supabase) throw new Error('Supabase is not configured')
+
+  await requireSessionUser()
+
+  const { data, error } = await supabase.rpc('delete_match', {
+    p_match_id: matchId,
+  })
+
+  if (error) throw error
+  return Boolean(data)
+}
+
 export async function fetchDuelInvitations(): Promise<DuelInvitation[]> {
   if (!supabase) return []
 

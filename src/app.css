@@ -766,14 +766,17 @@ textarea {
 .feedback-dot {
   width: 100%;
   height: 100%;
-  border: 1px solid rgba(255, 191, 0, 0.25);
+  border: 1px solid rgba(255, 191, 0, 0.34);
   border-radius: 999px;
   background: transparent;
 }
 
 .feedback-black {
-  background: #16161a;
-  border-color: rgba(255, 255, 255, 0.45);
+  background: #050505;
+  border-color: rgba(255, 255, 255, 0.9);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.12),
+    0 0 0 1px rgba(0, 0, 0, 0.4);
 }
 
 .feedback-white {
@@ -782,9 +785,17 @@ textarea {
 }
 
 .feedback-empty {
-  background: transparent;
-  border-style: dashed;
-  border-color: rgba(255, 191, 0, 0.2);
+  background:
+    repeating-linear-gradient(
+      45deg,
+      rgba(255, 191, 0, 0.08) 0,
+      rgba(255, 191, 0, 0.08) 2px,
+      transparent 2px,
+      transparent 4px
+    ),
+    rgba(0, 0, 0, 0.28);
+  border-style: solid;
+  border-color: rgba(255, 191, 0, 0.48);
 }
 
 .mini-grid .hit {

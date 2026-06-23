@@ -668,6 +668,15 @@ textarea {
   height: 38px;
 }
 
+.history-slot {
+  cursor: default;
+}
+
+.history-slot .peg {
+  width: 38px;
+  height: 38px;
+}
+
 .slot {
   width: 56px;
   height: 56px;
@@ -752,6 +761,30 @@ textarea {
   width: 100%;
   aspect-ratio: 1 / 1;
   border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.feedback-dot {
+  width: 100%;
+  height: 100%;
+  border: 1px solid rgba(255, 191, 0, 0.25);
+  border-radius: 999px;
+  background: transparent;
+}
+
+.feedback-black {
+  background: #16161a;
+  border-color: rgba(255, 255, 255, 0.45);
+}
+
+.feedback-white {
+  background: #f5f1e8;
+  border-color: rgba(245, 241, 232, 0.85);
+}
+
+.feedback-empty {
+  background: transparent;
+  border-style: dashed;
+  border-color: rgba(255, 191, 0, 0.2);
 }
 
 .mini-grid .hit {

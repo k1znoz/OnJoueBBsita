@@ -29,6 +29,7 @@
   type View = 'lobby' | 'modes' | 'async' | 'communication' | 'auth' | 'profile'
 
   type Tone = 'primary' | 'secondary' | 'tertiary' | 'error' | 'neutral'
+  type FeedbackDot = 'black' | 'white' | 'empty'
 
   type PalettePeg = {
     symbol: string
@@ -127,6 +128,14 @@
   }
 
   const modeTones: Array<ModeCard['tone']> = ['primary', 'secondary', 'tertiary']
+  const symbolToneMap: Record<string, Tone> = {
+    circle: 'primary',
+    pentagon: 'secondary',
+    square: 'tertiary',
+    change_history: 'error',
+    star: 'neutral',
+    diamond: 'neutral',
+  }
 
   function getErrorMessage(error: unknown, fallback: string): string {
     if (error && typeof error === 'object' && 'message' in error) {
@@ -255,6 +264,18 @@
     if (!Array.isArray(maybeRow)) return []
 
     return maybeRow.map((item) => String(item ?? '?'))
+  }
+
+  function toneForSymbol(symbol: string): Tone {
+    return symbolToneMap[symbol] ?? 'neutral'
+  }
+
+  function feedbackDots(exactHits: number, partialHits: number): FeedbackDot[] {
+    const blacks = Array(Math.max(0, exactHits)).fill('black') as FeedbackDot[]
+    const whites = Array(Math.max(0, partialHits)).fill('white') as FeedbackDot[]
+    const empties = Array(Math.max(0, 4 - exactHits - partialHits)).fill('empty') as FeedbackDot[]
+
+    return [...blacks, ...whites, ...empties].slice(0, 4)
   }
 
   async function loadMatchHistory(matchId: string | null) {
@@ -963,14 +984,17 @@
               <small>{index + 1}</small>
               <div class="guess-pegs">
                 {#each guess.row as value}
-                  <span class="slot"><span class="food">{value}</span></span>
+                  <span class="slot history-slot">
+                    <span class={`peg peg-${toneForSymbol(value)}`}>
+                      <span class="material-symbols-outlined">{value}</span>
+                    </span>
+                  </span>
                 {/each}
               </div>
               <div class="mini-grid">
-                <span>{guess.exactHits}</span>
-                <span>{guess.partialHits}</span>
-                <span>{guess.isWin ? 'WIN' : ''}</span>
-                <span></span>
+                {#each feedbackDots(guess.exactHits, guess.partialHits) as dot}
+                  <span class={`feedback-dot feedback-${dot}`}></span>
+                {/each}
               </div>
             </article>
           {/each}
@@ -995,8 +1019,20 @@
               </button>
             {/each}
           </div>
-          <div class="mini-grid"><span></span><span></span><span></span><span></span></div>
+          <div class="mini-grid">
+            <span class="feedback-dot feedback-empty"></span>
+            <span class="feedback-dot feedback-empty"></span>
+            <span class="feedback-dot feedback-empty"></span>
+            <span class="feedback-dot feedback-empty"></span>
+          </div>
         </article>
+      </section>
+
+      <section class="legend glass-panel">
+        <h4>Lecture des petits carres</h4>
+        <p><span class="feedback-dot feedback-black"></span> noir: symbole bien place.</p>
+        <p><span class="feedback-dot feedback-white"></span> blanc: symbole present mais mal place.</p>
+        <p><span class="feedback-dot feedback-empty"></span> vide: symbole absent du code secret.</p>
       </section>
 
       <button type="button" class="btn btn-primary wide" disabled={isSubmittingGuess} on:click={submitAsyncRow}>

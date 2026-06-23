@@ -1,11 +1,76 @@
+import type { Session, User } from '@supabase/supabase-js'
 import { supabase } from './client'
 
-function isMissingSessionError(error) {
-  const message = error?.message ?? ''
-  return /auth session missing/i.test(message)
+export type AuthPayload = {
+  user: User | null
+  session: Session | null
 }
 
-export async function fetchCurrentUser() {
+export type UserProfile = {
+  id: string
+  handle: string | null
+  credits: number
+  rank_tier: string | null
+}
+
+export type GameMode = {
+  id: string
+  code: string
+  title: string
+  short_description: string | null
+  sort_order: number
+}
+
+export type DailyChallenge = {
+  id: string
+  challenge_date: string
+  title: string
+  description: string | null
+  reward_credits: number
+  difficulty: string | null
+}
+
+export type MatchSummary = {
+  id: string
+  state: string
+  turn_number: number
+  max_turns: number
+  mode_id: string
+  updated_at: string | null
+}
+
+type SignUpParams = {
+  email: string
+  password: string
+  handle: string
+}
+
+type SignInParams = {
+  email: string
+  password: string
+}
+
+type UpdateProfileParams = {
+  handle: string
+}
+
+type CreateMatchParams = {
+  modeId: string
+  maxTurns?: number
+}
+
+type SubmitGuessParams = {
+  matchId: string
+  payload: Record<string, unknown>
+}
+
+function isMissingSessionError(error: unknown): boolean {
+  if (!error || typeof error !== 'object' || !('message' in error)) return false
+  const message = (error as { message?: unknown }).message
+  return typeof message === 'string' && /auth session missing/i.test(message)
+}
+
+export async function fetchCurrentUser(): Promise<User | null> {
   if (!supabase) return null
 
   const {
@@ -17,10 +82,11 @@ export async function fetchCurrentUser() {
     if (isMissingSessionError(error)) return null
     throw error
   }
+
   return user
 }
 
-export async function signUpWithEmail({ email, password, handle }) {
+export async function signUpWithEmail({ email, password, handle }: SignUpParams): Promise<AuthPayload> {
   if (!supabase) throw new Error('Supabase is not configured')
 
   const { data, error } = await supabase.auth.signUp({
@@ -34,10 +100,10 @@ export async function signUpWithEmail({ email, password, handle }) {
   })
 
   if (error) throw error
-  return data
+  return { user: data.user, session: data.session }
 }
 
-export async function signInWithEmail({ email, password }) {
+export async function signInWithEmail({ email, password }: SignInParams): Promise<AuthPayload> {
   if (!supabase) throw new Error('Supabase is not configured')
 
   const { data, error } = await supabase.auth.signInWithPassword({
@@ -46,17 +112,17 @@ export async function signInWithEmail({ email, password }) {
   })
 
   if (error) throw error
-  return data
+  return { user: data.user, session: data.session }
 }
 
-export async function signOutCurrentUser() {
+export async function signOutCurrentUser(): Promise<void> {
   if (!supabase) return
 
   const { error } = await supabase.auth.signOut()
   if (error) throw error
 }
 
-export async function fetchActiveGameModes() {
+export async function fetchActiveGameModes(): Promise<GameMode[]> {
   if (!supabase) return []
 
   const { data, error } = await supabase
@@ -66,10 +132,10 @@ export async function fetchActiveGameModes() {
     .order('sort_order', { ascending: true })
 
   if (error) throw error
-  return data ?? []
+  return (data ?? []) as GameMode[]
 }
 
-export async function fetchDailyChallenge() {
+export async function fetchDailyChallenge(): Promise<DailyChallenge | null> {
   if (!supabase) return null
 
   const { data, error } = await supabase
@@ -79,10 +145,10 @@ export async function fetchDailyChallenge() {
     .maybeSingle()
 
   if (error) throw error
-  return data
+  return (data ?? null) as DailyChallenge | null
 }
 
-export async function fetchMyProfile() {
+export async function fetchMyProfile(): Promise<UserProfile | null> {
   if (!supabase) return null
 
   const {
@@ -103,10 +169,10 @@ export async function fetchMyProfile() {
     .maybeSingle()
 
   if (error) throw error
-  return data
+  return (data ?? null) as UserProfile | null
 }
 
-export async function updateMyProfile({ handle }) {
+export async function updateMyProfile({ handle }: UpdateProfileParams): Promise<UserProfile> {
   if (!supabase) throw new Error('Supabase is not configured')
 
   const {
@@ -128,10 +194,10 @@ export async function updateMyProfile({ handle }) {
     .single()
 
   if (error) throw error
-  return data
+  return data as UserProfile
 }
 
-export async function fetchMyMatches() {
+export async function fetchMyMatches(): Promise<MatchSummary[]> {
   if (!supabase) return []
 
   const {
@@ -152,10 +218,14 @@ export async function fetchMyMatches() {
 
   if (error) throw error
 
-  return (data ?? []).map((row) => row.matches).filter(Boolean)
+  const rows = (data ?? []) as Array<{ matches: MatchSummary | MatchSummary[] | null }>
+
+  return rows
+    .map((row) => (Array.isArray(row.matches) ? row.matches[0] : row.matches))
+    .filter((match): match is MatchSummary => Boolean(match?.id))
 }
 
-export async function createMatch({ modeId, maxTurns = 10 }) {
+export async function createMatch({ modeId, maxTurns = 10 }: CreateMatchParams): Promise<{ id: string } & Record<string, unknown>> {
   if (!supabase) throw new Error('Supabase is not configured')
 
   const {
@@ -175,10 +245,10 @@ export async function createMatch({ modeId, maxTurns = 10 }) {
   })
 
   if (matchError) throw matchError
-  return match
+  return match as { id: string } & Record<string, unknown>
 }
 
-export async function submitGuess({ matchId, payload }) {
+export async function submitGuess({ matchId, payload }: SubmitGuessParams): Promise<Record<string, unknown>> {
   if (!supabase) throw new Error('Supabase is not configured')
 
   const { data, error } = await supabase.rpc('submit_guess', {
@@ -187,5 +257,5 @@ export async function submitGuess({ matchId, payload }) {
   })
 
   if (error) throw error
-  return data
+  return (data ?? {}) as Record<string, unknown>
 }

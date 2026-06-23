@@ -371,6 +371,18 @@ revoke execute on function public.submit_guess(uuid, jsonb) from public;
 grant execute on function public.create_match(uuid, integer, text) to authenticated;
 grant execute on function public.submit_guess(uuid, jsonb) to authenticated;
 
+-- Explicit privileges for PostgREST roles.
+grant usage on schema public to anon, authenticated;
+grant select on public.game_modes to anon, authenticated;
+grant select on public.daily_challenges to anon, authenticated;
+grant select on public.user_profiles to authenticated;
+grant select on public.matches to authenticated;
+grant select on public.match_players to authenticated;
+grant select on public.match_turns to authenticated;
+grant select on public.guesses to authenticated;
+grant select on public.economy_ledger to authenticated;
+grant insert, update on public.user_profiles to authenticated;
+
 -- RLS
 alter table public.user_profiles enable row level security;
 alter table public.game_modes enable row level security;

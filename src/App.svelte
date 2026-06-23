@@ -1,5 +1,6 @@
-<script>
+<script lang="ts">
   import { onMount } from 'svelte'
+  import type { User } from '@supabase/supabase-js'
   import {
     createMatch,
     fetchCurrentUser,
@@ -15,10 +16,84 @@
   } from './lib/supabase/services'
   import { hasSupabaseConfig, supabase } from './lib/supabase/client'
 
-  let modeCards = []
-  let activeMatches = []
+  type View = 'lobby' | 'modes' | 'async' | 'theme' | 'auth' | 'profile'
 
-  const asyncPalette = [
+  type Tone = 'primary' | 'secondary' | 'tertiary' | 'error' | 'neutral'
+
+  type PalettePeg = {
+    symbol: string
+    tone: Tone
+  }
+
+  type GameModeRow = {
+    id: string
+    code: string
+    title: string
+    short_description: string | null
+    sort_order: number
+  }
+
+  type ModeCard = {
+    modeId: string
+    code: string
+    icon: string
+    title: string
+    description: string
+    cta: string
+    tone: 'primary' | 'secondary' | 'tertiary'
+    route: 'async' | 'theme' | null
+    intense?: boolean
+  }
+
+  type MatchRow = {
+    id: string
+    state: string
+    turn_number: number | null
+    max_turns: number | null
+    mode_id: string
+    updated_at: string | null
+  }
+
+  type ActiveMatchCard = {
+    id: string
+    name: string
+    mode: string
+    tries: string
+    progress: number
+    status: 'En attente' | 'A votre tour'
+  }
+
+  type DailyChallengeRow = {
+    id: string
+    challenge_date: string
+    title: string
+    description: string | null
+    reward_credits: number
+    difficulty: string | null
+  }
+
+  type UserProfile = {
+    id: string
+    handle: string | null
+    credits: number
+    rank_tier: string | null
+  }
+
+  const modeTones: Array<ModeCard['tone']> = ['primary', 'secondary', 'tertiary']
+
+  function getErrorMessage(error: unknown, fallback: string): string {
+    if (error && typeof error === 'object' && 'message' in error) {
+      const message = (error as { message?: unknown }).message
+      if (typeof message === 'string' && message.trim()) return message
+    }
+
+    return fallback
+  }
+
+  let modeCards: ModeCard[] = []
+  let activeMatches: ActiveMatchCard[] = []
+
+  const asyncPalette: PalettePeg[] = [
     { symbol: 'circle', tone: 'primary' },
     { symbol: 'pentagon', tone: 'secondary' },
     { symbol: 'square', tone: 'tertiary' },
@@ -27,15 +102,17 @@
     { symbol: 'diamond', tone: 'neutral' },
   ]
 
-  const ingredients = []
+  const ingredients: string[] = []
 
-  let currentView = 'lobby'
-  let currentMatchId = null
-  let dailyChallenge = null
-  let currentUser = null
-  let myProfile = null
+  let currentView: View = 'lobby'
+  let currentMatchId: string | null = null
+  let dailyChallenge: DailyChallengeRow | null = null
+  let currentUser: User | null = null
+  let myProfile: UserProfile | null = null
   let isLoading = true
   let authLoading = false
+  let signOutLoading = false
+  let profileSaving = false
   let coins = 0
   let toast = ''
 
@@ -44,14 +121,14 @@
   let authHandle = ''
   let profileHandle = ''
 
-  let asyncRow = [null, null, null, null]
+  let asyncRow: Array<PalettePeg | null> = [null, null, null, null]
   let asyncSlot = 0
   let asyncAttempt = 1
 
-  let themeRow = [null, null, null, null]
+  let themeRow: Array<string | null> = [null, null, null, null]
   let themeSlot = 0
 
-  const viewTitle = {
+  const viewTitle: Record<View, string> = {
     lobby: 'Lobby',
     modes: 'Modes',
     async: 'Session',
@@ -91,7 +168,7 @@
     }
   })
 
-  async function hydrateApp() {
+  async function hydrateApp(preferredMatchId: string | null = null) {
     if (!hasSupabaseConfig) {
       isLoading = false
       toast = 'Configuration Supabase manquante.'
@@ -101,28 +178,34 @@
     try {
       isLoading = true
 
-      const [user, profile, modes, matches, challenge] = await Promise.all([
-        fetchCurrentUser(),
+      const user = await fetchCurrentUser()
+      currentUser = user
+
+      const [profileRes, modesRes, matchesRes, challengeRes] = await Promise.allSettled([
         fetchMyProfile(),
         fetchActiveGameModes(),
         fetchMyMatches(),
         fetchDailyChallenge(),
       ])
 
-      currentUser = user
+      const profile = (profileRes.status === 'fulfilled' ? profileRes.value : null) as UserProfile | null
+      const modes = (modesRes.status === 'fulfilled' ? modesRes.value : []) as GameModeRow[]
+      const matches = (matchesRes.status === 'fulfilled' ? matchesRes.value : []) as Array<MatchRow | MatchRow[]>
+      const challenge = (challengeRes.status === 'fulfilled' ? challengeRes.value : null) as DailyChallengeRow | null
+
       myProfile = profile
       coins = profile?.credits ?? 0
       dailyChallenge = challenge
       profileHandle = profile?.handle ?? ''
 
-      modeCards = (modes ?? []).map((mode, index) => ({
+      modeCards = (modes ?? []).map((mode, index): ModeCard => ({
         modeId: mode.id,
         code: mode.code,
         icon: 'extension',
         title: mode.title,
         description: mode.short_description ?? '',
         cta: 'Jouer',
-        tone: ['primary', 'secondary', 'tertiary'][index % 3],
+        tone: modeTones[index % modeTones.length],
         route:
           mode.code?.includes('async') || mode.code?.includes('classic')
             ? 'async'
@@ -133,7 +216,11 @@
 
       const modeById = new Map((modes ?? []).map((mode) => [mode.id, mode.title]))
 
-      activeMatches = (matches ?? []).map((match) => {
+      const normalizedMatches = (matches ?? [])
+        .map((match) => (Array.isArray(match) ? match[0] : match))
+        .filter((match): match is MatchRow => Boolean(match?.id))
+
+      activeMatches = normalizedMatches.map((match): ActiveMatchCard => {
         const maxTurns = match.max_turns || 1
         const turnNumber = match.turn_number || 1
         const progress = Math.max(0, Math.min(100, Math.round((turnNumber / maxTurns) * 100)))
@@ -148,15 +235,41 @@
         }
       })
 
-      currentMatchId = activeMatches[0]?.id ?? null
+      const hasPreferredMatch = preferredMatchId
+        ? activeMatches.some((match) => match.id === preferredMatchId)
+        : false
+
+      currentMatchId = hasPreferredMatch ? preferredMatchId : (activeMatches[0]?.id ?? preferredMatchId ?? null)
+
+      const loadErrors = []
+      if (profileRes.status === 'rejected') loadErrors.push('profil')
+      if (modesRes.status === 'rejected') loadErrors.push('modes')
+      if (matchesRes.status === 'rejected') loadErrors.push('parties')
+      if (challengeRes.status === 'rejected') loadErrors.push('defi')
+
+      if (loadErrors.length > 0) {
+        toast = `Chargement partiel (${loadErrors.join(', ')}).`
+      }
     } catch (error) {
-      toast = error?.message ?? 'Erreur de chargement des donnees.'
+      toast = getErrorMessage(error, 'Erreur de chargement des donnees.')
     } finally {
       isLoading = false
     }
   }
 
-  function goTo(view) {
+  function goTo(view: View) {
+    if ((view === 'async' || view === 'theme' || view === 'profile') && !currentUser) {
+      toast = 'Connecte-toi pour acceder a cet espace.'
+      currentView = 'auth'
+      return
+    }
+
+    if (view === 'async' && !currentMatchId) {
+      toast = 'Aucune session active. Choisis un mode pour lancer une partie.'
+      currentView = 'modes'
+      return
+    }
+
     currentView = view
     toast = ''
   }
@@ -178,7 +291,7 @@
       await hydrateApp()
       if (currentUser) goTo('lobby')
     } catch (error) {
-      toast = error?.message ?? 'Inscription impossible.'
+      toast = getErrorMessage(error, 'Inscription impossible.')
     } finally {
       authLoading = false
     }
@@ -199,25 +312,28 @@
       await hydrateApp()
       goTo('lobby')
     } catch (error) {
-      toast = error?.message ?? 'Connexion impossible.'
+      toast = getErrorMessage(error, 'Connexion impossible.')
     } finally {
       authLoading = false
     }
   }
 
   async function handleSignOut() {
+    if (signOutLoading) return
+
     try {
-      authLoading = true
+      signOutLoading = true
+      toast = 'Deconnexion en cours...'
       await signOutCurrentUser()
+    } catch (error) {
+      toast = getErrorMessage(error, 'Deconnexion impossible.')
+    } finally {
       currentUser = null
       myProfile = null
       coins = 0
       activeMatches = []
       goTo('auth')
-    } catch (error) {
-      toast = error?.message ?? 'Deconnexion impossible.'
-    } finally {
-      authLoading = false
+      signOutLoading = false
     }
   }
 
@@ -227,20 +343,33 @@
       return
     }
 
+    const nextHandle = (profileHandle ?? '').trim().toLowerCase().replace(/[^a-z0-9_]/g, '')
+    if (!nextHandle) {
+      toast = 'Pseudo invalide (a-z, 0-9, underscore).'
+      return
+    }
+
+    if (nextHandle === (myProfile?.handle ?? '')) {
+      toast = 'Aucune modification a enregistrer.'
+      return
+    }
+
     try {
-      authLoading = true
-      const updated = await updateMyProfile({ handle: profileHandle })
+      profileSaving = true
+      toast = 'Enregistrement du pseudo...'
+      const updated = await updateMyProfile({ handle: nextHandle })
       myProfile = updated
+      profileHandle = updated?.handle ?? nextHandle
       toast = 'Profil mis a jour.'
       await hydrateApp()
     } catch (error) {
-      toast = error?.message ?? 'Mise a jour impossible.'
+      toast = getErrorMessage(error, 'Mise a jour impossible.')
     } finally {
-      authLoading = false
+      profileSaving = false
     }
   }
 
-  async function chooseMode(card) {
+  async function chooseMode(card: ModeCard) {
     if (!currentUser) {
       toast = 'Connecte-toi pour creer une partie.'
       goTo('auth')
@@ -252,20 +381,20 @@
     try {
       const match = await createMatch({ modeId: card.modeId })
       currentMatchId = match.id
-      await hydrateApp()
+      await hydrateApp(match.id)
       goTo(card.route ?? 'async')
     } catch (error) {
-      toast = error?.message ?? 'Impossible de creer la partie.'
+      toast = getErrorMessage(error, 'Impossible de creer la partie.')
     }
   }
 
-  function placeAsyncPeg(peg) {
+  function placeAsyncPeg(peg: PalettePeg) {
     asyncRow[asyncSlot] = peg
     asyncRow = [...asyncRow]
     asyncSlot = Math.min(asyncSlot + 1, asyncRow.length - 1)
   }
 
-  function setAsyncSlot(index) {
+  function setAsyncSlot(index: number) {
     asyncSlot = index
   }
 
@@ -281,6 +410,11 @@
       return
     }
 
+    if (asyncRow.some((peg) => !peg)) {
+      toast = 'Complete les 4 slots avant de soumettre.'
+      return
+    }
+
     try {
       await submitGuess({
         matchId: currentMatchId,
@@ -292,17 +426,17 @@
       asyncSlot = 0
       toast = ''
     } catch (error) {
-      toast = error?.message ?? 'Soumission impossible.'
+      toast = getErrorMessage(error, 'Soumission impossible.')
     }
   }
 
-  function placeIngredient(item) {
+  function placeIngredient(item: string) {
     themeRow[themeSlot] = item
     themeRow = [...themeRow]
     themeSlot = Math.min(themeSlot + 1, themeRow.length - 1)
   }
 
-  function setThemeSlot(index) {
+  function setThemeSlot(index: number) {
     themeSlot = index
   }
 
@@ -337,10 +471,12 @@
     <div class="topbar-actions">
       {#if currentUser}
         <span class="caption">Connecte: {myProfile?.handle ?? currentUser.email}</span>
-        <button class="btn btn-ghost" on:click={() => goTo('profile')}>Mon compte</button>
-        <button class="btn btn-ghost" disabled={authLoading} on:click={handleSignOut}>Deconnexion</button>
+        <button type="button" class="btn btn-ghost" on:click={() => goTo('profile')}>Mon compte</button>
+        <button type="button" class="btn btn-ghost" disabled={signOutLoading} on:click={handleSignOut}>
+          {signOutLoading ? 'Deconnexion...' : 'Deconnexion'}
+        </button>
       {:else}
-        <button class="btn btn-ghost" on:click={() => goTo('auth')}>Connexion</button>
+        <button type="button" class="btn btn-ghost" on:click={() => goTo('auth')}>Connexion</button>
       {/if}
     </div>
   </header>
@@ -355,7 +491,7 @@
         <h2>{dailyChallenge?.title ?? 'Defi indisponible'}</h2>
         <p>{dailyChallenge?.description ?? 'Les donnees du defi quotidien seront affichees ici.'}</p>
         <div class="hero-row">
-          <button class="btn btn-primary" on:click={() => goTo('modes')}>
+          <button type="button" class="btn btn-primary" on:click={() => goTo('modes')}>
             OUVRIR SESSION
             <span class="material-symbols-outlined">arrow_forward</span>
           </button>
@@ -368,7 +504,7 @@
 
       <section class="section-head">
         <h3>Parties actives</h3>
-        <button class="btn btn-ghost" on:click={() => goTo('modes')}>Voir les modes</button>
+        <button type="button" class="btn btn-ghost" on:click={() => goTo('modes')}>Voir les modes</button>
       </section>
 
       <section class="stack">
@@ -392,6 +528,7 @@
               </div>
               <div class="progress"><span style={`width:${match.progress}%`}></span></div>
               <button
+                type="button"
                 class="btn {match.status === 'En attente' ? 'btn-ghost' : 'btn-primary'}"
                 on:click={() => {
                   currentMatchId = match.id
@@ -419,6 +556,7 @@
         {:else}
           {#each modeCards as card}
             <button
+              type="button"
               class={`mode-card glass-panel ${card.intense ? 'mode-card-intense' : ''}`}
               on:click={() => chooseMode(card)}
             >
@@ -452,6 +590,7 @@
           <div class="guess-pegs">
             {#each asyncRow as peg, index}
               <button
+                type="button"
                 class={`slot ${index === asyncSlot ? 'slot-active' : ''}`}
                 on:click={() => setAsyncSlot(index)}
               >
@@ -469,7 +608,7 @@
         </article>
       </section>
 
-      <button class="btn btn-primary wide" on:click={submitAsyncRow}>
+      <button type="button" class="btn btn-primary wide" on:click={submitAsyncRow}>
         SOUMETTRE
         <span class="material-symbols-outlined">arrow_forward</span>
       </button>
@@ -480,7 +619,7 @@
         </div>
         <div class="picker-grid">
           {#each asyncPalette as peg}
-            <button class="picker-peg" on:click={() => placeAsyncPeg(peg)}>
+            <button type="button" class="picker-peg" on:click={() => placeAsyncPeg(peg)}>
               <span class={`peg peg-${peg.tone}`}>
                 <span class="material-symbols-outlined">{peg.symbol}</span>
               </span>
@@ -511,12 +650,12 @@
         <article class="guess-row current board-item">
           <div class="guess-pegs emoji-row">
             {#each themeRow as item, index}
-              <button class={`slot ${index === themeSlot ? 'slot-active' : ''}`} on:click={() => setThemeSlot(index)}>
+              <button type="button" class={`slot ${index === themeSlot ? 'slot-active' : ''}`} on:click={() => setThemeSlot(index)}>
                 <span class="food">{item ?? '[Slot vide]'}</span>
               </button>
             {/each}
           </div>
-          <button class="btn btn-primary" on:click={validateRecipe}>VALIDATE</button>
+          <button type="button" class="btn btn-primary" on:click={validateRecipe}>VALIDATE</button>
         </article>
       </section>
 
@@ -529,7 +668,7 @@
             <article class="empty-state">Aucun ingredient disponible.</article>
           {:else}
             {#each ingredients as item}
-              <button class="ingredient" on:click={() => placeIngredient(item)}>{item}</button>
+              <button type="button" class="ingredient" on:click={() => placeIngredient(item)}>{item}</button>
             {/each}
           {/if}
         </div>
@@ -558,8 +697,8 @@
         </div>
 
         <div class="account-actions">
-          <button class="btn btn-primary" disabled={authLoading} on:click={handleSignIn}>Connexion</button>
-          <button class="btn btn-ghost" disabled={authLoading} on:click={handleSignUp}>Creer un compte</button>
+          <button type="button" class="btn btn-primary" disabled={authLoading} on:click={handleSignIn}>Connexion</button>
+          <button type="button" class="btn btn-ghost" disabled={authLoading} on:click={handleSignUp}>Creer un compte</button>
         </div>
       </section>
     {/if}
@@ -572,7 +711,7 @@
         {#if !currentUser}
           <article class="empty-state">Aucune session utilisateur.</article>
           <div class="account-actions">
-            <button class="btn btn-primary" on:click={() => goTo('auth')}>Se connecter</button>
+            <button type="button" class="btn btn-primary" on:click={() => goTo('auth')}>Se connecter</button>
           </div>
         {:else}
           <div class="profile-grid">
@@ -592,8 +731,10 @@
           </div>
 
           <div class="account-actions">
-            <button class="btn btn-primary" disabled={authLoading} on:click={saveProfile}>Enregistrer</button>
-            <button class="btn btn-ghost" on:click={() => goTo('lobby')}>Retour lobby</button>
+            <button type="button" class="btn btn-primary" disabled={profileSaving} on:click={saveProfile}>
+              {profileSaving ? 'Enregistrement...' : 'Enregistrer'}
+            </button>
+            <button type="button" class="btn btn-ghost" on:click={() => goTo('lobby')}>Retour lobby</button>
           </div>
         {/if}
       </section>
@@ -605,23 +746,23 @@
   </main>
 
   <nav class="bottom-nav">
-    <button class={currentView === 'lobby' ? 'active' : ''} on:click={() => goTo('lobby')}>
+    <button type="button" class={currentView === 'lobby' ? 'active' : ''} on:click={() => goTo('lobby')}>
       <span class="material-symbols-outlined">videogame_asset</span>
       <span>Lobby</span>
     </button>
-    <button class={currentView === 'modes' ? 'active' : ''} on:click={() => goTo('modes')}>
+    <button type="button" class={currentView === 'modes' ? 'active' : ''} on:click={() => goTo('modes')}>
       <span class="material-symbols-outlined">extension</span>
       <span>Modes</span>
     </button>
-    <button class={currentView === 'async' ? 'active' : ''} on:click={() => goTo('async')}>
+    <button type="button" class={currentView === 'async' ? 'active' : ''} on:click={() => goTo('async')}>
       <span class="material-symbols-outlined">history</span>
       <span>Logs</span>
     </button>
-    <button class={currentView === 'theme' ? 'active' : ''} on:click={() => goTo('theme')}>
+    <button type="button" class={currentView === 'theme' ? 'active' : ''} on:click={() => goTo('theme')}>
       <span class="material-symbols-outlined">settings</span>
       <span>Core</span>
     </button>
-    <button class={currentView === 'profile' || currentView === 'auth' ? 'active' : ''} on:click={() => goTo(currentUser ? 'profile' : 'auth')}>
+    <button type="button" class={currentView === 'profile' || currentView === 'auth' ? 'active' : ''} on:click={() => goTo(currentUser ? 'profile' : 'auth')}>
       <span class="material-symbols-outlined">person</span>
       <span>Compte</span>
     </button>

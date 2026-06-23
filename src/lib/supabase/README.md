@@ -14,11 +14,11 @@ Catalog tables (`game_modes`, `daily_challenges`) are readable publicly when act
 
 ## 3) Front usage
 
-Use helpers from `src/lib/supabase/services.js`.
+Use helpers from `src/lib/supabase/services.ts`.
 
 Example:
 
-```js
+```ts
 import { fetchActiveGameModes, fetchDailyChallenge } from '$lib/supabase/services'
 
 const modes = await fetchActiveGameModes()

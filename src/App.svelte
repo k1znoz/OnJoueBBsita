@@ -16,7 +16,7 @@
   } from './lib/supabase/services'
   import { hasSupabaseConfig, supabase } from './lib/supabase/client'
 
-  type View = 'lobby' | 'modes' | 'async' | 'theme' | 'auth' | 'profile'
+  type View = 'lobby' | 'modes' | 'async' | 'auth' | 'profile'
 
   type Tone = 'primary' | 'secondary' | 'tertiary' | 'error' | 'neutral'
 
@@ -41,7 +41,7 @@
     description: string
     cta: string
     tone: 'primary' | 'secondary' | 'tertiary'
-    route: 'async' | 'theme' | null
+    route: 'async' | null
     intense?: boolean
   }
 
@@ -90,6 +90,21 @@
     return fallback
   }
 
+  async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | null = null
+
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<T>((resolve) => {
+          timer = setTimeout(() => resolve(fallback), timeoutMs)
+        }),
+      ])
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  }
+
   let modeCards: ModeCard[] = []
   let activeMatches: ActiveMatchCard[] = []
 
@@ -101,8 +116,6 @@
     { symbol: 'star', tone: 'neutral' },
     { symbol: 'diamond', tone: 'neutral' },
   ]
-
-  const ingredients: string[] = []
 
   let currentView: View = 'lobby'
   let currentMatchId: string | null = null
@@ -125,14 +138,10 @@
   let asyncSlot = 0
   let asyncAttempt = 1
 
-  let themeRow: Array<string | null> = [null, null, null, null]
-  let themeSlot = 0
-
   const viewTitle: Record<View, string> = {
     lobby: 'Lobby',
     modes: 'Modes',
     async: 'Session',
-    theme: 'Thematique',
     auth: 'Compte',
     profile: 'Profil',
   }
@@ -153,7 +162,7 @@
         coins = 0
         activeMatches = []
 
-        if (currentView === 'profile' || currentView === 'async' || currentView === 'theme') {
+        if (currentView === 'profile' || currentView === 'async') {
           currentView = 'auth'
         }
 
@@ -178,14 +187,14 @@
     try {
       isLoading = true
 
-      const user = await fetchCurrentUser()
+      const user = await withTimeout(fetchCurrentUser(), 7000, null)
       currentUser = user
 
       const [profileRes, modesRes, matchesRes, challengeRes] = await Promise.allSettled([
-        fetchMyProfile(),
-        fetchActiveGameModes(),
-        fetchMyMatches(),
-        fetchDailyChallenge(),
+        withTimeout(fetchMyProfile(), 7000, null),
+        withTimeout(fetchActiveGameModes(), 7000, [] as GameModeRow[]),
+        withTimeout(fetchMyMatches(), 7000, [] as Array<MatchRow | MatchRow[]>),
+        withTimeout(fetchDailyChallenge(), 7000, null),
       ])
 
       const profile = (profileRes.status === 'fulfilled' ? profileRes.value : null) as UserProfile | null
@@ -198,7 +207,9 @@
       dailyChallenge = challenge
       profileHandle = profile?.handle ?? ''
 
-      modeCards = (modes ?? []).map((mode, index): ModeCard => ({
+      modeCards = (modes ?? [])
+        .filter((mode) => mode.code?.includes('async') || mode.code?.includes('classic'))
+        .map((mode, index): ModeCard => ({
         modeId: mode.id,
         code: mode.code,
         icon: 'extension',
@@ -206,12 +217,7 @@
         description: mode.short_description ?? '',
         cta: 'Jouer',
         tone: modeTones[index % modeTones.length],
-        route:
-          mode.code?.includes('async') || mode.code?.includes('classic')
-            ? 'async'
-            : mode.code?.includes('theme')
-              ? 'theme'
-              : null,
+        route: 'async',
       }))
 
       const modeById = new Map((modes ?? []).map((mode) => [mode.id, mode.title]))
@@ -258,7 +264,7 @@
   }
 
   function goTo(view: View) {
-    if ((view === 'async' || view === 'theme' || view === 'profile') && !currentUser) {
+    if ((view === 'async' || view === 'profile') && !currentUser) {
       toast = 'Connecte-toi pour acceder a cet espace.'
       currentView = 'auth'
       return
@@ -324,7 +330,8 @@
     try {
       signOutLoading = true
       toast = 'Deconnexion en cours...'
-      await signOutCurrentUser()
+      await withTimeout(signOutCurrentUser(), 5000, undefined)
+      toast = 'Deconnecte.'
     } catch (error) {
       toast = getErrorMessage(error, 'Deconnexion impossible.')
     } finally {
@@ -430,19 +437,6 @@
     }
   }
 
-  function placeIngredient(item: string) {
-    themeRow[themeSlot] = item
-    themeRow = [...themeRow]
-    themeSlot = Math.min(themeSlot + 1, themeRow.length - 1)
-  }
-
-  function setThemeSlot(index: number) {
-    themeSlot = index
-  }
-
-  function validateRecipe() {
-    toast = ''
-  }
 </script>
 
 <svelte:head>
@@ -629,57 +623,6 @@
       </section>
     {/if}
 
-    {#if currentView === 'theme'}
-      <section class="section-head intro">
-        <h3>Mode thematique</h3>
-        <p>Les donnees de partie thematique seront affichees ici.</p>
-      </section>
-
-      <section class="stats-grid">
-        <article class="stat-card glass-panel">
-          <small>TENTATIVES</small>
-          <strong>--/--</strong>
-        </article>
-        <article class="stat-card glass-panel">
-          <small>TEMPS</small>
-          <strong>--:--</strong>
-        </article>
-      </section>
-
-      <section class="guess-history glass-panel">
-        <article class="guess-row current board-item">
-          <div class="guess-pegs emoji-row">
-            {#each themeRow as item, index}
-              <button type="button" class={`slot ${index === themeSlot ? 'slot-active' : ''}`} on:click={() => setThemeSlot(index)}>
-                <span class="food">{item ?? '[Slot vide]'}</span>
-              </button>
-            {/each}
-          </div>
-          <button type="button" class="btn btn-primary" on:click={validateRecipe}>VALIDATE</button>
-        </article>
-      </section>
-
-      <section class="picker glass-panel">
-        <div class="picker-head">
-          <h4>INGREDIENTS</h4>
-        </div>
-        <div class="ingredient-grid">
-          {#if ingredients.length === 0}
-            <article class="empty-state">Aucun ingredient disponible.</article>
-          {:else}
-            {#each ingredients as item}
-              <button type="button" class="ingredient" on:click={() => placeIngredient(item)}>{item}</button>
-            {/each}
-          {/if}
-        </div>
-      </section>
-
-      <section class="legend glass-panel">
-        <p><span>◉</span> Bon element, bonne position</p>
-        <p><span>★</span> Bon element, mauvaise position</p>
-      </section>
-    {/if}
-
     {#if currentView === 'auth'}
       <section class="account-panel glass-panel">
         <h3>Acces utilisateur</h3>
@@ -757,10 +700,6 @@
     <button type="button" class={currentView === 'async' ? 'active' : ''} on:click={() => goTo('async')}>
       <span class="material-symbols-outlined">history</span>
       <span>Logs</span>
-    </button>
-    <button type="button" class={currentView === 'theme' ? 'active' : ''} on:click={() => goTo('theme')}>
-      <span class="material-symbols-outlined">settings</span>
-      <span>Core</span>
     </button>
     <button type="button" class={currentView === 'profile' || currentView === 'auth' ? 'active' : ''} on:click={() => goTo(currentUser ? 'profile' : 'auth')}>
       <span class="material-symbols-outlined">person</span>

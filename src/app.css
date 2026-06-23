@@ -832,7 +832,7 @@ input {
   margin: 0 auto;
   z-index: 45;
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
   padding: 8px 12px max(10px, env(safe-area-inset-bottom));
   background: color-mix(in oklab, #151518 82%, transparent);

@@ -13,7 +13,7 @@
     submitGuess,
     updateMyProfile,
   } from './lib/supabase/services'
-  import { hasSupabaseConfig } from './lib/supabase/client'
+  import { hasSupabaseConfig, supabase } from './lib/supabase/client'
 
   let modeCards = []
   let activeMatches = []
@@ -62,6 +62,33 @@
 
   onMount(() => {
     hydrateApp()
+
+    if (!supabase) return
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      currentUser = session?.user ?? null
+
+      if (!session?.user) {
+        myProfile = null
+        profileHandle = ''
+        coins = 0
+        activeMatches = []
+
+        if (currentView === 'profile' || currentView === 'async' || currentView === 'theme') {
+          currentView = 'auth'
+        }
+
+        return
+      }
+
+      await hydrateApp()
+    })
+
+    return () => {
+      subscription.unsubscribe()
+    }
   })
 
   async function hydrateApp() {
@@ -309,6 +336,7 @@
     </div>
     <div class="topbar-actions">
       {#if currentUser}
+        <span class="caption">Connecte: {myProfile?.handle ?? currentUser.email}</span>
         <button class="btn btn-ghost" on:click={() => goTo('profile')}>Mon compte</button>
         <button class="btn btn-ghost" disabled={authLoading} on:click={handleSignOut}>Deconnexion</button>
       {:else}
@@ -327,7 +355,7 @@
         <h2>{dailyChallenge?.title ?? 'Defi indisponible'}</h2>
         <p>{dailyChallenge?.description ?? 'Les donnees du defi quotidien seront affichees ici.'}</p>
         <div class="hero-row">
-          <button class="btn btn-primary" on:click={() => goTo('async')}>
+          <button class="btn btn-primary" on:click={() => goTo('modes')}>
             OUVRIR SESSION
             <span class="material-symbols-outlined">arrow_forward</span>
           </button>

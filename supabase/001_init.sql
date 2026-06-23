@@ -469,3 +469,20 @@ drop policy if exists "user read own ledger" on public.economy_ledger;
 create policy "user read own ledger"
 on public.economy_ledger for select
 using (user_id = auth.uid());
+
+-- Bootstrap data: ensure at least one playable mode exists.
+insert into public.game_modes (code, title, short_description, is_enabled, sort_order)
+values (
+  'classic_async',
+  'Classic',
+  'Mode classique asynchrone, 4 slots, palette standard.',
+  true,
+  10
+)
+on conflict (code) do update
+set
+  title = excluded.title,
+  short_description = excluded.short_description,
+  is_enabled = true,
+  sort_order = excluded.sort_order,
+  updated_at = now();

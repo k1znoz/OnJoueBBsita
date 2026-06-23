@@ -1,5 +1,10 @@
 import { supabase } from './client'
 
+function isMissingSessionError(error) {
+  const message = error?.message ?? ''
+  return /auth session missing/i.test(message)
+}
+
 export async function fetchCurrentUser() {
   if (!supabase) return null
 
@@ -8,7 +13,10 @@ export async function fetchCurrentUser() {
     error,
   } = await supabase.auth.getUser()
 
-  if (error) throw error
+  if (error) {
+    if (isMissingSessionError(error)) return null
+    throw error
+  }
   return user
 }
 
@@ -82,7 +90,10 @@ export async function fetchMyProfile() {
     error: authError,
   } = await supabase.auth.getUser()
 
-  if (authError) throw authError
+  if (authError) {
+    if (isMissingSessionError(authError)) return null
+    throw authError
+  }
   if (!user) return null
 
   const { data, error } = await supabase
@@ -128,7 +139,10 @@ export async function fetchMyMatches() {
     error: authError,
   } = await supabase.auth.getUser()
 
-  if (authError) throw authError
+  if (authError) {
+    if (isMissingSessionError(authError)) return []
+    throw authError
+  }
   if (!user) return []
 
   const { data, error } = await supabase

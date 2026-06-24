@@ -2,6 +2,12 @@ import type { GuessHistoryEntry, FeedbackDot, Tone, GameModeRow, MatchRow, Activ
 
 const modeTones: Array<ModeCard['tone']> = ['primary', 'secondary', 'tertiary']
 
+function isDuelMode(mode: Pick<GameModeRow, 'code' | 'title'>): boolean {
+  const code = (mode.code ?? '').toLowerCase()
+  const title = (mode.title ?? '').toLowerCase()
+  return /(^|_)duel($|_)/.test(code) || title.includes('duel')
+}
+
 const symbolToneMap: Record<string, Tone> = {
   circle: 'primary',
   pentagon: 'secondary',
@@ -46,13 +52,13 @@ export function buildModeCards(modes: GameModeRow[]): ModeCard[] {
       cta: 'Jouer',
       tone: modeTones[index % modeTones.length],
       route: 'async',
-      queueType: mode.code?.includes('duel') ? 'duel' : 'solo',
+      queueType: isDuelMode(mode) ? 'duel' : 'solo',
     }))
 }
 
 export function buildActiveMatches(matches: Array<MatchRow | MatchRow[]>, modes: GameModeRow[]): ActiveMatchCard[] {
   const modeById = new Map((modes ?? []).map((mode) => [mode.id, mode.title]))
-  const modeCodeById = new Map((modes ?? []).map((mode) => [mode.id, mode.code]))
+  const modeByIdFull = new Map((modes ?? []).map((mode) => [mode.id, mode]))
 
   const normalizedMatches = (matches ?? [])
     .map((match) => (Array.isArray(match) ? match[0] : match))
@@ -69,7 +75,7 @@ export function buildActiveMatches(matches: Array<MatchRow | MatchRow[]>, modes:
       id: match.id,
       name: `Partie ${match.id.slice(0, 8)}`,
       mode: modeById.get(match.mode_id) ?? 'Mode',
-      queueType: (modeCodeById.get(match.mode_id) ?? '').includes('duel') ? 'duel' : 'solo',
+      queueType: isDuelMode(modeByIdFull.get(match.mode_id) ?? { code: '', title: '' }) ? 'duel' : 'solo',
       tries: `${turnNumber}/${maxTurns}`,
       progress,
       status: isDone ? 'Terminee' : isWaiting ? 'En attente' : 'A votre tour',

@@ -32,6 +32,8 @@
   }
 
   let decoderHistory: DisplayGuessRow[] = []
+  let canSubmitGuess = true
+  let decoderStatus = ''
 
   $: decoderHistory =
     myDuelGuesses.length > 0
@@ -49,6 +51,13 @@
           exactHits: guess.exactHits,
           partialHits: guess.partialHits,
         }))
+
+  $: canSubmitGuess = !isDuelMatch || (mySecretReady && opponentSecretReady)
+  $: decoderStatus = !isDuelMatch
+    ? 'Mode solo: code IA actif'
+    : canSubmitGuess
+      ? `Tentative ${asyncAttempt}/10`
+      : 'Verrouillez les deux codes pour demarrer'
 </script>
 
 <section class="duel-screen">
@@ -149,7 +158,7 @@
         <span class="role-dot role-dot-decoder"></span>
         <h3>Decodeur</h3>
       </div>
-      <small>{isDuelMatch ? `Tentative ${asyncAttempt}/10` : 'Mode solo: code IA actif'}</small>
+      <small>{decoderStatus}</small>
     </header>
 
     <article class="stack-card history-card decoder-history">
@@ -206,7 +215,7 @@
       <button
         type="button"
         class="btn-submit"
-        disabled={isSubmittingGuess}
+        disabled={isSubmittingGuess || !canSubmitGuess}
         on:click={onSubmitRow}
       >
         {isSubmittingGuess ? 'Envoi...' : 'Soumettre'}

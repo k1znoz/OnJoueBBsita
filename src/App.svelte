@@ -23,15 +23,37 @@
     canCancelMatch as policyCanCancelMatch,
     canDeleteMatch as policyCanDeleteMatch,
     getNavigationBlocker,
-    getSubmitGuessBlocker,
     placePegInRow,
   } from './lib/mvc/model/gamePolicies'
   import {
     fetchCommunicationData,
-    fetchGuessHistoryData,
     fetchHydrationData,
+    fetchMatchTimelineData,
     normalizeHandleInput,
   } from './lib/mvc/controller/appController'
+  import { APP_MESSAGES, buildPartialLoadMessage } from './lib/mvc/controller/messages'
+  import {
+    getDuelChallengeBlocker,
+    getModeChoiceBlocker,
+    getProfileSaveBlocker,
+    getSendMessageBlocker,
+    getSignInBlocker,
+    getSignUpBlocker,
+  } from './lib/mvc/controller/interactionPolicies'
+  import {
+    getCurrentMatch,
+    getGuessSubmissionBlocker,
+    getSecretSubmissionBlocker,
+  } from './lib/mvc/controller/gameController'
+  import {
+    buildCommunicationPatch,
+    buildHydrationPatch,
+    buildSessionEndedPatch,
+    buildSignedOutPatch,
+    buildThreadMessagesPatch,
+    buildTimelineErrorPatch,
+    buildTimelinePatch,
+  } from './lib/mvc/controller/statePatches'
   import {
     acceptInvitationMatch,
     createDuelInvitation,
@@ -44,7 +66,6 @@
     signUpUser,
     startModeMatch,
     setMatchSecretCode,
-    fetchMatchDuelBoard,
     submitDuelGuessRow,
     submitMatchGuessRow,
   } from './lib/mvc/controller/useCases'
@@ -55,6 +76,10 @@
 
   function patchState(payload: Partial<AppState>) {
     appState.update((state) => ({ ...state, ...payload }))
+  }
+
+  function setToast(message: string) {
+    patchState({ toast: message })
   }
 
   onMount(() => {
@@ -79,13 +104,7 @@
       patchState({ currentUser: session?.user ?? null })
 
       if (!session?.user) {
-        patchState({
-          myProfile: null,
-          coins: 0,
-          activeMatches: [],
-          profileHandle: '',
-          currentView: ['profile', 'async', 'communication'].includes(get(appState).currentView) ? 'auth' : get(appState).currentView,
-        })
+        patchState(buildSessionEndedPatch(get(appState).currentView))
 
         return
       }
@@ -104,26 +123,14 @@
       const state = get(appState)
       const currentMatch = state.activeMatches.find((match) => match.id === matchId)
       const isDuelMatch = currentMatch?.queueType === 'duel'
-
-      const historyData = await fetchGuessHistoryData(matchId, get(appState).currentUser)
-      const board = matchId && isDuelMatch ? await fetchMatchDuelBoard(matchId) : null
-      patchState({
-        guessHistory: historyData.guessHistory,
-        asyncAttempt: historyData.asyncAttempt,
-        myDuelGuesses: board?.myGuesses ?? [],
-        opponentDuelGuesses: board?.opponentGuesses ?? [],
-        mySecretReady: board?.mySecretReady ?? false,
-        opponentSecretReady: board?.opponentSecretReady ?? false,
+      const timeline = await fetchMatchTimelineData({
+        matchId,
+        currentUser: state.currentUser,
+        isDuelMatch,
       })
-    } catch {
-      patchState({
-        guessHistory: [],
-        asyncAttempt: 1,
-        myDuelGuesses: [],
-        opponentDuelGuesses: [],
-        mySecretReady: false,
-        opponentSecretReady: false,
-      })
+      patchState(buildTimelinePatch(timeline))
+    } catch (error) {
+      patchState(buildTimelineErrorPatch(getErrorMessage(error, APP_MESSAGES.timelineLoadError)))
     }
   }
 
@@ -131,7 +138,7 @@
     if (!hasSupabaseConfig) {
       patchState({
         isLoading: false,
-        toast: 'Configuration Supabase manquante.',
+        toast: APP_MESSAGES.missingConfig,
       })
       return
     }
@@ -147,19 +154,7 @@
         selectedChatUserId: state.selectedChatUserId,
       })
 
-      patchState({
-        currentUser: hydration.currentUser,
-        myProfile: hydration.profile,
-        coins: hydration.coins,
-        dailyChallenge: hydration.dailyChallenge,
-        profileHandle: hydration.profileHandle,
-        opponentCandidates: hydration.opponentCandidates,
-        selectedOpponentId: hydration.selectedOpponentId,
-        selectedChatUserId: hydration.selectedChatUserId,
-        modeCards: hydration.modeCards,
-        activeMatches: hydration.activeMatches,
-        currentMatchId: hydration.currentMatchId,
-      })
+      patchState(buildHydrationPatch(hydration))
 
       await loadMatchHistory(hydration.currentMatchId)
 
@@ -170,25 +165,25 @@
 
       if (hydration.loadErrors.length > 0) {
         patchState({
-          toast: `Chargement partiel (${hydration.loadErrors.join(', ')}).`,
+          toast: buildPartialLoadMessage(hydration.loadErrors),
         })
       } else if (nextState.toast.startsWith('Chargement partiel')) {
         patchState({ toast: '' })
       }
     } catch (error) {
-      patchState({ toast: getErrorMessage(error, 'Erreur de chargement des donnees.') })
+      patchState({ toast: getErrorMessage(error, APP_MESSAGES.hydrateLoadError) })
     } finally {
       patchState({ isLoading: false })
     }
   }
 
-  function goTo(view: View) {
+  function goTo(view: View, options?: { preserveToast?: boolean }) {
     const state = get(appState)
     const blocker = getNavigationBlocker(view, state.currentUser, state.currentMatchId)
 
     if (blocker === 'auth_required') {
       patchState({
-        toast: 'Connecte-toi pour acceder a cet espace.',
+        toast: APP_MESSAGES.authRequiredForArea,
         currentView: 'auth',
       })
       return
@@ -196,30 +191,33 @@
 
     if (blocker === 'match_required') {
       patchState({
-        toast: 'Aucune session active. Choisis un mode pour lancer une partie.',
+        toast: APP_MESSAGES.matchRequired,
         currentView: 'modes',
       })
       return
     }
 
-    patchState({ currentView: view, toast: '' })
+    patchState({ currentView: view, toast: options?.preserveToast ? state.toast : '' })
 
     if (view === 'communication') {
       void loadCommunication()
     }
   }
 
-  async function loadCommunication() {
+  async function loadCommunication(threadOnly = false) {
     try {
       patchState({ communicationLoading: true })
       const state = get(appState)
       const communication = await fetchCommunicationData(state.selectedChatUserId, state.currentUser)
-      patchState({
-        duelInvitations: communication.duelInvitations,
-        chatMessages: communication.chatMessages,
-      })
+      if (threadOnly) {
+        patchState(buildThreadMessagesPatch(communication))
+      } else {
+        patchState(buildCommunicationPatch(communication))
+      }
     } catch (error) {
-      patchState({ toast: getErrorMessage(error, 'Chargement communication impossible.') })
+      patchState({
+        toast: getErrorMessage(error, threadOnly ? APP_MESSAGES.chatLoadError : APP_MESSAGES.communicationLoadError),
+      })
     } finally {
       patchState({ communicationLoading: false })
     }
@@ -231,36 +229,23 @@
       patchState({ currentMatchId: invite.match_id })
       await hydrateApp(invite.match_id)
       await loadCommunication()
-      patchState({ toast: 'Invitation acceptee.' })
-      goTo('async')
+      setToast(APP_MESSAGES.inviteAccepted)
+      goTo('async', { preserveToast: true })
     } catch (error) {
-      patchState({ toast: getErrorMessage(error, 'Acceptation impossible.') })
+      patchState({ toast: getErrorMessage(error, APP_MESSAGES.inviteAcceptError) })
     }
   }
 
   async function refreshChatThread() {
-    try {
-      patchState({ communicationLoading: true })
-      const state = get(appState)
-      const communication = await fetchCommunicationData(state.selectedChatUserId, state.currentUser)
-      patchState({ chatMessages: communication.chatMessages })
-    } catch (error) {
-      patchState({ toast: getErrorMessage(error, 'Chargement des messages impossible.') })
-    } finally {
-      patchState({ communicationLoading: false })
-    }
+    await loadCommunication(true)
   }
 
   async function sendMessageToPlayer() {
     const state = get(appState)
-    if (state.sendingMessage) return
-    if (!state.selectedChatUserId) {
-      patchState({ toast: 'Choisis un joueur pour discuter.' })
-      return
-    }
-
-    if (!state.chatInput.trim()) {
-      patchState({ toast: 'Message vide.' })
+    const blocker = getSendMessageBlocker(state)
+    if (blocker === 'noop') return
+    if (blocker) {
+      setToast(blocker)
       return
     }
 
@@ -270,7 +255,7 @@
       patchState({ chatInput: '' })
       await refreshChatThread()
     } catch (error) {
-      patchState({ toast: getErrorMessage(error, 'Envoi du message impossible.') })
+      patchState({ toast: getErrorMessage(error, APP_MESSAGES.chatSendError) })
     } finally {
       patchState({ sendingMessage: false })
     }
@@ -278,8 +263,9 @@
 
   async function handleSignUp() {
     const state = get(appState)
-    if (!state.authEmail || !state.authPassword || !state.authHandle) {
-      patchState({ toast: 'Email, mot de passe et pseudo requis.' })
+    const blocker = getSignUpBlocker(state)
+    if (blocker) {
+      setToast(blocker)
       return
     }
 
@@ -290,11 +276,11 @@
         password: state.authPassword,
         handle: state.authHandle,
       })
-      patchState({ toast: 'Compte cree. Verifie ton email si confirmation activee.' })
+      setToast(APP_MESSAGES.signUpSuccess)
       await hydrateApp()
       if (get(appState).currentUser) goTo('lobby')
     } catch (error) {
-      patchState({ toast: getErrorMessage(error, 'Inscription impossible.') })
+      patchState({ toast: getErrorMessage(error, APP_MESSAGES.signUpError) })
     } finally {
       patchState({ authLoading: false })
     }
@@ -302,8 +288,9 @@
 
   async function handleSignIn() {
     const state = get(appState)
-    if (!state.authEmail || !state.authPassword) {
-      patchState({ toast: 'Email et mot de passe requis.' })
+    const blocker = getSignInBlocker(state)
+    if (blocker) {
+      setToast(blocker)
       return
     }
 
@@ -316,7 +303,7 @@
       await hydrateApp()
       goTo('lobby')
     } catch (error) {
-      patchState({ toast: getErrorMessage(error, 'Connexion impossible.') })
+      patchState({ toast: getErrorMessage(error, APP_MESSAGES.signInError) })
     } finally {
       patchState({ authLoading: false })
     }
@@ -328,20 +315,15 @@
     try {
       patchState({
         signOutLoading: true,
-        toast: 'Deconnexion en cours...',
+        toast: APP_MESSAGES.signOutInProgress,
       })
       await signOutUser()
-      patchState({ toast: 'Deconnecte.' })
+      setToast(APP_MESSAGES.signOutSuccess)
     } catch (error) {
-      patchState({ toast: getErrorMessage(error, 'Deconnexion impossible.') })
+      patchState({ toast: getErrorMessage(error, APP_MESSAGES.signOutError) })
     } finally {
-      patchState({
-        currentUser: null,
-        myProfile: null,
-        coins: 0,
-        activeMatches: [],
-      })
-      goTo('auth')
+      patchState(buildSignedOutPatch())
+      goTo('auth', { preserveToast: true })
       patchState({ signOutLoading: false })
     }
   }
@@ -354,38 +336,39 @@
     }
 
     const nextHandle = normalizeHandleInput(state.profileHandle)
-    if (!nextHandle) {
-      patchState({ toast: 'Pseudo invalide (a-z, 0-9, underscore).' })
-      return
-    }
-
-    if (nextHandle === (state.myProfile?.handle ?? '')) {
-      patchState({ toast: 'Aucune modification a enregistrer.' })
+    const blocker = getProfileSaveBlocker({
+      currentUser: state.currentUser,
+      normalizedHandle: nextHandle,
+      currentHandle: state.myProfile?.handle ?? '',
+    })
+    if (blocker) {
+      setToast(blocker)
       return
     }
 
     try {
       patchState({
         profileSaving: true,
-        toast: 'Enregistrement du pseudo...',
+        toast: APP_MESSAGES.profileSaving,
       })
       const updated = await saveUserProfileHandle(nextHandle)
       patchState({
         myProfile: updated,
         profileHandle: updated?.handle ?? nextHandle,
       })
-      patchState({ toast: 'Profil mis a jour.' })
+      setToast(APP_MESSAGES.profileSaved)
       await hydrateApp()
     } catch (error) {
-      patchState({ toast: getErrorMessage(error, 'Mise a jour impossible.') })
+      patchState({ toast: getErrorMessage(error, APP_MESSAGES.profileSaveError) })
     } finally {
       patchState({ profileSaving: false })
     }
   }
 
   async function chooseMode(card: ModeCard) {
-    if (!get(appState).currentUser) {
-      patchState({ toast: 'Connecte-toi pour creer une partie.' })
+    const blocker = getModeChoiceBlocker(get(appState).currentUser)
+    if (blocker) {
+      setToast(blocker)
       goTo('auth')
       return
     }
@@ -399,27 +382,24 @@
       await hydrateApp(match.id)
 
       if (match.isDuel && match.state === 'waiting_opponent') {
-        patchState({ toast: 'Duel cree. En attente d\'un adversaire...' })
+        setToast(APP_MESSAGES.duelCreatedWaiting)
+        goTo(card.route ?? 'async', { preserveToast: true })
+        return
       }
 
       goTo(card.route ?? 'async')
     } catch (error) {
-      patchState({ toast: getErrorMessage(error, 'Impossible de creer la partie.') })
+      patchState({ toast: getErrorMessage(error, APP_MESSAGES.modeCreateError) })
     }
   }
 
   async function createDuelChallenge(card: ModeCard) {
     const state = get(appState)
-    if (state.duelLoading) return
-
-    if (!state.currentUser) {
-      patchState({ toast: 'Connecte-toi pour creer une partie.' })
-      goTo('auth')
-      return
-    }
-
-    if (!state.selectedOpponentId) {
-      patchState({ toast: 'Choisis un joueur a defier.' })
+    const blocker = getDuelChallengeBlocker(state)
+    if (blocker === 'noop') return
+    if (blocker) {
+      setToast(blocker)
+      if (blocker === APP_MESSAGES.modeAuthRequired) goTo('auth')
       return
     }
 
@@ -432,10 +412,10 @@
 
       patchState({ currentMatchId: match.id })
       await hydrateApp(match.id)
-      patchState({ toast: 'Invitation envoyee.' })
+      setToast(APP_MESSAGES.duelInviteSent)
       goTo('async')
     } catch (error) {
-      patchState({ toast: getErrorMessage(error, 'Invitation impossible.') })
+      patchState({ toast: getErrorMessage(error, APP_MESSAGES.duelInviteError) })
     } finally {
       patchState({ duelLoading: false })
     }
@@ -451,7 +431,7 @@
       await hydrateApp(result.id)
       goTo('async')
     } catch (error) {
-      patchState({ toast: getErrorMessage(error, 'Impossible d\'ouvrir la partie.') })
+      patchState({ toast: getErrorMessage(error, APP_MESSAGES.matchOpenError) })
     }
   }
 
@@ -481,7 +461,7 @@
 
       await hydrateApp(get(appState).currentMatchId)
     } catch (error) {
-      patchState({ toast: getErrorMessage(error, 'Action impossible sur la partie.') })
+      patchState({ toast: getErrorMessage(error, APP_MESSAGES.matchManageError) })
     } finally {
       patchState({ managingMatchId: null })
     }
@@ -517,34 +497,27 @@
 
   async function submitSecretRow() {
     const state = get(appState)
-    if (state.isSubmittingSecret || state.mySecretReady) return
-
-    const currentMatch = state.activeMatches.find((match) => match.id === state.currentMatchId)
-    if (currentMatch?.queueType !== 'duel') {
-      patchState({ toast: 'Le codeur manuel est reserve au mode duel.' })
+    const currentMatch = getCurrentMatch(state)
+    const blocker = getSecretSubmissionBlocker(state, currentMatch)
+    if (blocker === 'noop') return
+    if (blocker) {
+      patchState({ toast: blocker })
       return
     }
 
-    if (!state.currentMatchId) {
-      patchState({ toast: 'Aucune session active.' })
-      return
-    }
-
-    if (state.secretRow.some((peg) => !peg)) {
-      patchState({ toast: 'Complete les 4 slots avant de verrouiller ton code.' })
-      return
-    }
+    const matchId = state.currentMatchId
+    if (!matchId) return
 
     try {
       patchState({ isSubmittingSecret: true })
-      await setMatchSecretCode({ matchId: state.currentMatchId, row: state.secretRow })
+      await setMatchSecretCode({ matchId, row: state.secretRow })
       patchState({
         mySecretReady: true,
-        toast: 'Code secret verrouille.',
+        toast: APP_MESSAGES.secretLocked,
       })
-      await loadMatchHistory(state.currentMatchId)
+      await loadMatchHistory(matchId)
     } catch (error) {
-      patchState({ toast: getErrorMessage(error, 'Impossible de verrouiller le code secret.') })
+      patchState({ toast: getErrorMessage(error, APP_MESSAGES.secretLockError) })
     } finally {
       patchState({ isSubmittingSecret: false })
     }
@@ -554,17 +527,11 @@
     const state = get(appState)
     if (state.isSubmittingGuess) return
 
-    const currentMatch = state.activeMatches.find((match) => match.id === state.currentMatchId)
-    const blocker = getSubmitGuessBlocker({
-      currentUser: state.currentUser,
-      currentMatchId: state.currentMatchId,
-      asyncRow: state.asyncRow,
-      currentMatch,
-      guessCount: state.guessHistory.length,
-    })
+    const currentMatch = getCurrentMatch(state)
+    const blocker = getGuessSubmissionBlocker(state, currentMatch)
     if (blocker) {
       patchState({ toast: blocker })
-      if (blocker === 'Connecte-toi pour jouer.') goTo('auth')
+      if (blocker === APP_MESSAGES.modeAuthRequired || blocker === 'Connecte-toi pour jouer.') goTo('auth')
       return
     }
 
@@ -583,7 +550,7 @@
       })
       await hydrateApp(get(appState).currentMatchId)
     } catch (error) {
-      patchState({ toast: getErrorMessage(error, 'Soumission impossible.') })
+      patchState({ toast: getErrorMessage(error, APP_MESSAGES.submitError) })
     } finally {
       patchState({ isSubmittingGuess: false })
     }

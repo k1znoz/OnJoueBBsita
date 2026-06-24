@@ -11,11 +11,10 @@ import {
   deleteMatch,
   submitGuess,
   sendPlayerMessage,
-  fetchDuelBoard,
   setDuelSecretCode,
   submitDuelGuess,
 } from '../../supabase/services'
-import type { ActiveMatchCard, DuelBoard, ModeCard, PalettePeg } from '../model/types'
+import type { ActiveMatchCard, ModeCard, PalettePeg } from '../model/types'
 import { withTimeout } from '../model/mappers'
 
 export async function signUpUser(params: { email: string; password: string; handle: string }) {
@@ -35,7 +34,7 @@ export async function saveUserProfileHandle(handle: string) {
 }
 
 export async function startModeMatch(card: ModeCard): Promise<{ id: string; state?: string; isDuel: boolean }> {
-  const isDuel = card.code?.includes('duel')
+  const isDuel = card.queueType === 'duel'
   const match = isDuel ? await joinOrCreateDuel({ modeId: card.modeId }) : await createMatch({ modeId: card.modeId })
 
   return {
@@ -101,14 +100,4 @@ export async function submitDuelGuessRow(params: { matchId: string; row: Array<P
   const row = params.row.map((peg) => peg?.symbol ?? '').filter(Boolean)
   if (row.length !== 4) throw new Error('Complete les 4 slots pour soumettre ton guess.')
   return submitDuelGuess(params.matchId, row)
-}
-
-export async function fetchMatchDuelBoard(matchId: string): Promise<DuelBoard> {
-  const board = await fetchDuelBoard(matchId)
-  return {
-    mySecretReady: board.mySecretReady,
-    opponentSecretReady: board.opponentSecretReady,
-    myGuesses: board.myGuesses,
-    opponentGuesses: board.opponentGuesses,
-  }
 }

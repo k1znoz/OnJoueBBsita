@@ -1095,6 +1095,27 @@ begin
     raise exception 'Match is not active';
   end if;
 
+  if not exists (
+    select 1
+    from public.duel_secret_codes mine
+    where mine.match_id = p_match_id
+      and mine.owner_user_id = v_uid
+      and mine.is_locked = true
+      and mine.secret_payload is not null
+  ) then
+    raise exception 'Lock your secret before guessing';
+  end if;
+
+  if (
+    select count(*)
+    from public.duel_secret_codes dsc
+    where dsc.match_id = p_match_id
+      and dsc.is_locked = true
+      and dsc.secret_payload is not null
+  ) < 2 then
+    raise exception 'Both secrets must be locked before guessing';
+  end if;
+
   select mp.user_id into v_target_user_id
   from public.match_players mp
   where mp.match_id = p_match_id

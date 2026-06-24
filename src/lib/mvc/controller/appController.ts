@@ -3,6 +3,7 @@ import {
   fetchActiveGameModes,
   fetchCurrentUser,
   fetchDailyChallenge,
+  fetchDuelBoard,
   fetchDuelInvitations,
   fetchMatchGuesses,
   fetchMessagesWithUser,
@@ -14,6 +15,7 @@ import { buildActiveMatches, buildGuessHistory, buildModeCards, withTimeout } fr
 import type {
   ActiveMatchCard,
   DailyChallengeRow,
+  DuelGuessEntry,
   DuelInvitation,
   GameModeRow,
   GuessHistoryEntry,
@@ -47,6 +49,26 @@ export type GuessHistoryData = {
 export type CommunicationData = {
   duelInvitations: DuelInvitation[]
   chatMessages: PlayerMessage[]
+}
+
+export type MatchTimelineData = {
+  guessHistory: GuessHistoryEntry[]
+  asyncAttempt: number
+  myDuelGuesses: DuelGuessEntry[]
+  opponentDuelGuesses: DuelGuessEntry[]
+  mySecretReady: boolean
+  opponentSecretReady: boolean
+}
+
+function emptyTimelineData(): MatchTimelineData {
+  return {
+    guessHistory: [],
+    asyncAttempt: 1,
+    myDuelGuesses: [],
+    opponentDuelGuesses: [],
+    mySecretReady: false,
+    opponentSecretReady: false,
+  }
 }
 
 export async function fetchHydrationData(params: {
@@ -127,6 +149,44 @@ export async function fetchGuessHistoryData(matchId: string | null, currentUser:
   return {
     guessHistory,
     asyncAttempt: guessHistory.length + 1,
+  }
+}
+
+export async function fetchMatchTimelineData(params: {
+  matchId: string | null
+  currentUser: User | null
+  isDuelMatch: boolean
+}): Promise<MatchTimelineData> {
+  const { matchId, currentUser, isDuelMatch } = params
+  if (!matchId || !currentUser) return emptyTimelineData()
+
+  const historyData = await fetchGuessHistoryData(matchId, currentUser)
+  if (!isDuelMatch) {
+    return {
+      ...emptyTimelineData(),
+      guessHistory: historyData.guessHistory,
+      asyncAttempt: historyData.asyncAttempt,
+    }
+  }
+
+  const board = await withTimeout(
+    fetchDuelBoard(matchId),
+    7000,
+    {
+      mySecretReady: false,
+      opponentSecretReady: false,
+      myGuesses: [],
+      opponentGuesses: [],
+    }
+  )
+
+  return {
+    guessHistory: historyData.guessHistory,
+    asyncAttempt: (board.myGuesses?.length ?? 0) + 1,
+    myDuelGuesses: board.myGuesses ?? [],
+    opponentDuelGuesses: board.opponentGuesses ?? [],
+    mySecretReady: board.mySecretReady,
+    opponentSecretReady: board.opponentSecretReady,
   }
 }
 

@@ -57,6 +57,28 @@
   </button>
 </section>
 
+<section class="picker glass-panel picker-secret">
+  <div class="picker-head">
+    <h4>PALETTE</h4>
+  </div>
+  <div class="picker-grid">
+    {#each asyncPalette as peg}
+      <button
+        type="button"
+        class="picker-peg"
+        on:click={() => {
+          onPlacePeg(peg)
+          if (!mySecretReady) onPlaceSecretPeg(peg)
+        }}
+      >
+        <span class={`peg peg-${peg.tone}`}>
+          <span class="material-symbols-outlined">{peg.symbol}</span>
+        </span>
+      </button>
+    {/each}
+  </div>
+</section>
+
 <section class="hud-row">
   <article class="turn-panel glass-panel">
     <small>TOUR</small>
@@ -185,24 +207,3 @@
   {/if}
 </section>
 
-<section class="picker glass-panel">
-  <div class="picker-head">
-    <h4>PALETTE</h4>
-  </div>
-  <div class="picker-grid">
-    {#each asyncPalette as peg}
-      <button
-        type="button"
-        class="picker-peg"
-        on:click={() => {
-          onPlacePeg(peg)
-          if (!mySecretReady) onPlaceSecretPeg(peg)
-        }}
-      >
-        <span class={`peg peg-${peg.tone}`}>
-          <span class="material-symbols-outlined">{peg.symbol}</span>
-        </span>
-      </button>
-    {/each}
-  </div>
-</section>

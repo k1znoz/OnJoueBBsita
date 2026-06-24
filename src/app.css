@@ -710,30 +710,45 @@ textarea {
 }
 
 .peg-primary {
-  background: var(--amber-soft);
-  color: #2c2000;
-  box-shadow: 0 0 14px rgba(255, 191, 0, 0.3);
+  background: #ffd166;
+  color: #332100;
+  box-shadow: 0 0 14px rgba(255, 209, 102, 0.35);
 }
 
 .peg-secondary {
-  background: #ffb59c;
-  color: #471200;
+  background: #ff8f70;
+  color: #3d0f00;
 }
 
 .peg-tertiary {
-  background: #8df5ff;
-  color: #00373c;
+  background: #6fd3ff;
+  color: #05283a;
 }
 
 .peg-error {
-  background: var(--danger);
-  color: #5b0006;
+  background: #ff6b6b;
+  color: #3f0909;
+}
+
+.peg-violet {
+  background: #b69cff;
+  color: #271a54;
+}
+
+.peg-mint {
+  background: #66f0c8;
+  color: #053128;
+}
+
+.peg-slate {
+  background: #a9b8d8;
+  color: #1a243b;
 }
 
 .peg-neutral {
-  background: #29292d;
-  color: var(--text);
-  border: 1px solid rgba(255, 255, 255, 0.17);
+  background: #f3f4f6;
+  color: #1f2937;
+  border: 1px solid rgba(17, 24, 39, 0.35);
 }
 
 .emoji-row .slot {
@@ -806,6 +821,10 @@ textarea {
 .picker {
   display: grid;
   gap: 10px;
+}
+
+.picker-secret {
+  margin-top: -4px;
 }
 
 .picker-head h4 {

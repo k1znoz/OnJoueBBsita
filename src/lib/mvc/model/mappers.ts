@@ -7,10 +7,10 @@ const symbolToneMap: Record<string, Tone> = {
   pentagon: 'secondary',
   square: 'tertiary',
   change_history: 'error',
-  star: 'neutral',
-  diamond: 'neutral',
-  hexagon: 'primary',
-  bolt: 'secondary',
+  star: 'violet',
+  diamond: 'mint',
+  hexagon: 'slate',
+  bolt: 'neutral',
 }
 
 export function normalizeGuessRow(payload: unknown): string[] {

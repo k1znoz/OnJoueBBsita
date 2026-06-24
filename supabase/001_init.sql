@@ -147,6 +147,7 @@ create table if not exists public.user_game_stats (
 
 alter table public.matches add column if not exists secret_code_hash text;
 alter table public.matches add column if not exists create_request_key text;
+alter table public.matches add column if not exists stats_applied boolean not null default false;
 
 create table if not exists public.economy_ledger (
   id uuid primary key default gen_random_uuid(),
@@ -1530,6 +1531,10 @@ alter table public.matches enable row level security;
 alter table public.match_players enable row level security;
 alter table public.match_turns enable row level security;
 alter table public.guesses enable row level security;
+alter table public.duel_secret_codes enable row level security;
+alter table public.duel_guesses enable row level security;
+alter table public.match_player_results enable row level security;
+alter table public.user_game_stats enable row level security;
 alter table public.economy_ledger enable row level security;
 alter table public.player_messages enable row level security;
 

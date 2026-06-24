@@ -1,6 +1,6 @@
 export type View = 'lobby' | 'modes' | 'async' | 'communication' | 'auth' | 'profile'
 
-export type Tone = 'primary' | 'secondary' | 'tertiary' | 'error' | 'neutral'
+export type Tone = 'primary' | 'secondary' | 'tertiary' | 'error' | 'neutral' | 'violet' | 'mint' | 'slate'
 export type FeedbackDot = 'black' | 'white' | 'empty'
 
 export type PalettePeg = {

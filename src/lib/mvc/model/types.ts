@@ -98,3 +98,20 @@ export type UserProfile = {
   credits: number
   rank_tier: string | null
 }
+
+export type DuelGuessEntry = {
+  id: string
+  turn: number
+  row: string[]
+  exactHits: number
+  partialHits: number
+  isWin: boolean
+  createdAt: string
+}
+
+export type DuelBoard = {
+  mySecretReady: boolean
+  opponentSecretReady: boolean
+  myGuesses: DuelGuessEntry[]
+  opponentGuesses: DuelGuessEntry[]
+}

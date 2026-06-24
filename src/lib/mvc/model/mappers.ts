@@ -9,6 +9,8 @@ const symbolToneMap: Record<string, Tone> = {
   change_history: 'error',
   star: 'neutral',
   diamond: 'neutral',
+  hexagon: 'primary',
+  bolt: 'secondary',
 }
 
 export function normalizeGuessRow(payload: unknown): string[] {

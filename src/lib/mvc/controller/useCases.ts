@@ -1,5 +1,21 @@
-import { signInWithEmail, signOutCurrentUser, signUpWithEmail, updateMyProfile, createMatch, joinOrCreateDuel, createDuelInvite, acceptDuelInvite, cancelMatch, deleteMatch, submitGuess, sendPlayerMessage } from '../../supabase/services'
-import type { ActiveMatchCard, ModeCard, PalettePeg } from '../model/types'
+import {
+  signInWithEmail,
+  signOutCurrentUser,
+  signUpWithEmail,
+  updateMyProfile,
+  createMatch,
+  joinOrCreateDuel,
+  createDuelInvite,
+  acceptDuelInvite,
+  cancelMatch,
+  deleteMatch,
+  submitGuess,
+  sendPlayerMessage,
+  fetchDuelBoard,
+  setDuelSecretCode,
+  submitDuelGuess,
+} from '../../supabase/services'
+import type { ActiveMatchCard, DuelBoard, ModeCard, PalettePeg } from '../model/types'
 import { withTimeout } from '../model/mappers'
 
 export async function signUpUser(params: { email: string; password: string; handle: string }) {
@@ -73,4 +89,26 @@ export async function submitMatchGuessRow(params: { matchId: string; row: Array<
 export async function sendChatMessage(params: { recipientUserId: string; body: string }) {
   const cleanBody = params.body.trim()
   return sendPlayerMessage(params.recipientUserId, cleanBody)
+}
+
+export async function setMatchSecretCode(params: { matchId: string; row: Array<PalettePeg | null> }) {
+  const row = params.row.map((peg) => peg?.symbol ?? '').filter(Boolean)
+  if (row.length !== 4) throw new Error('Complete les 4 slots pour definir ton code secret.')
+  return setDuelSecretCode(params.matchId, row)
+}
+
+export async function submitDuelGuessRow(params: { matchId: string; row: Array<PalettePeg | null> }) {
+  const row = params.row.map((peg) => peg?.symbol ?? '').filter(Boolean)
+  if (row.length !== 4) throw new Error('Complete les 4 slots pour soumettre ton guess.')
+  return submitDuelGuess(params.matchId, row)
+}
+
+export async function fetchMatchDuelBoard(matchId: string): Promise<DuelBoard> {
+  const board = await fetchDuelBoard(matchId)
+  return {
+    mySecretReady: board.mySecretReady,
+    opponentSecretReady: board.opponentSecretReady,
+    myGuesses: board.myGuesses,
+    opponentGuesses: board.opponentGuesses,
+  }
 }

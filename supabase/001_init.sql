@@ -53,6 +53,7 @@ create table if not exists public.matches (
   winner_user_id uuid references public.user_profiles(id),
   started_at timestamptz,
   ended_at timestamptz,
+  stats_applied boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -90,6 +91,60 @@ create table if not exists public.guesses (
   created_at timestamptz not null default now()
 );
 
+create table if not exists public.duel_secret_codes (
+  match_id uuid not null references public.matches(id) on delete cascade,
+  owner_user_id uuid not null references public.user_profiles(id) on delete cascade,
+  secret_payload jsonb,
+  is_locked boolean not null default false,
+  solved_at timestamptz,
+  solved_by_user_id uuid references public.user_profiles(id),
+  solved_in_turn integer,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  primary key (match_id, owner_user_id)
+);
+
+create table if not exists public.duel_guesses (
+  id uuid primary key default gen_random_uuid(),
+  match_id uuid not null references public.matches(id) on delete cascade,
+  attacker_user_id uuid not null references public.user_profiles(id),
+  target_user_id uuid not null references public.user_profiles(id),
+  turn_index integer not null,
+  payload jsonb not null,
+  exact_hits integer not null default 0,
+  partial_hits integer not null default 0,
+  is_win boolean not null default false,
+  created_at timestamptz not null default now(),
+  unique (match_id, attacker_user_id, turn_index)
+);
+
+create table if not exists public.match_player_results (
+  match_id uuid not null references public.matches(id) on delete cascade,
+  user_id uuid not null references public.user_profiles(id) on delete cascade,
+  result text not null check (result in ('win', 'loss', 'draw', 'abandoned')),
+  guesses_submitted integer not null default 0,
+  exact_hits_total integer not null default 0,
+  partial_hits_total integer not null default 0,
+  turns_used integer not null default 0,
+  completed_at timestamptz not null default now(),
+  primary key (match_id, user_id)
+);
+
+create table if not exists public.user_game_stats (
+  user_id uuid primary key references public.user_profiles(id) on delete cascade,
+  matches_played integer not null default 0,
+  matches_won integer not null default 0,
+  matches_lost integer not null default 0,
+  matches_drawn integer not null default 0,
+  matches_abandoned integer not null default 0,
+  guesses_submitted integer not null default 0,
+  exact_hits_total integer not null default 0,
+  partial_hits_total integer not null default 0,
+  last_match_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 alter table public.matches add column if not exists secret_code_hash text;
 alter table public.matches add column if not exists create_request_key text;
 
@@ -116,6 +171,10 @@ create index if not exists idx_matches_state on public.matches(state);
 create index if not exists idx_match_players_user on public.match_players(user_id);
 create index if not exists idx_turns_match on public.match_turns(match_id);
 create index if not exists idx_guesses_match on public.guesses(match_id);
+create index if not exists idx_duel_secrets_match on public.duel_secret_codes(match_id);
+create index if not exists idx_duel_guesses_match on public.duel_guesses(match_id);
+create index if not exists idx_duel_guesses_attacker on public.duel_guesses(attacker_user_id, match_id);
+create index if not exists idx_match_player_results_user on public.match_player_results(user_id);
 create index if not exists idx_ledger_user on public.economy_ledger(user_id);
 create index if not exists idx_messages_sender on public.player_messages(sender_user_id, created_at desc);
 create index if not exists idx_messages_recipient on public.player_messages(recipient_user_id, created_at desc);
@@ -147,6 +206,14 @@ for each row execute function public.touch_updated_at();
 
 drop trigger if exists trg_matches_updated_at on public.matches;
 create trigger trg_matches_updated_at before update on public.matches
+for each row execute function public.touch_updated_at();
+
+drop trigger if exists trg_duel_secret_codes_updated_at on public.duel_secret_codes;
+create trigger trg_duel_secret_codes_updated_at before update on public.duel_secret_codes
+for each row execute function public.touch_updated_at();
+
+drop trigger if exists trg_user_game_stats_updated_at on public.user_game_stats;
+create trigger trg_user_game_stats_updated_at before update on public.user_game_stats
 for each row execute function public.touch_updated_at();
 
 -- Auto-create profile on signup
@@ -197,6 +264,218 @@ create trigger trg_auth_user_created
 after insert on auth.users
 for each row execute function public.handle_new_user();
 
+create or replace function public.calculate_mastermind_feedback(
+  p_guess_row jsonb,
+  p_secret_row jsonb,
+  p_allowed_symbols text[]
+)
+returns table(
+  exact_hits integer,
+  partial_hits integer,
+  empty_hits integer,
+  is_win boolean
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_exact integer := 0;
+  v_partial integer := 0;
+  v_guess_count integer;
+  v_secret_count integer;
+  v_i integer;
+begin
+  if jsonb_typeof(p_guess_row) is distinct from 'array' or jsonb_array_length(p_guess_row) <> 4 then
+    raise exception 'Guess row must contain exactly 4 symbols';
+  end if;
+
+  if jsonb_typeof(p_secret_row) is distinct from 'array' or jsonb_array_length(p_secret_row) <> 4 then
+    raise exception 'Secret row must contain exactly 4 symbols';
+  end if;
+
+  for v_i in 0..3 loop
+    if p_guess_row ->> v_i = p_secret_row ->> v_i then
+      v_exact := v_exact + 1;
+    end if;
+  end loop;
+
+  for v_i in array_lower(p_allowed_symbols, 1)..array_upper(p_allowed_symbols, 1) loop
+    select count(*) into v_guess_count
+    from jsonb_array_elements_text(p_guess_row) as g(value)
+    where g.value = p_allowed_symbols[v_i];
+
+    select count(*) into v_secret_count
+    from jsonb_array_elements_text(p_secret_row) as s(value)
+    where s.value = p_allowed_symbols[v_i];
+
+    v_partial := v_partial + least(v_guess_count, v_secret_count);
+  end loop;
+
+  v_partial := greatest(0, v_partial - v_exact);
+
+  return query
+  select
+    v_exact,
+    v_partial,
+    greatest(0, 4 - v_exact - v_partial) as empty_hits,
+    (v_exact = 4) as is_win;
+end;
+$$;
+
+create or replace function public.apply_match_outcome_stats(
+  p_match_id uuid
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_match public.matches;
+  v_user_id uuid;
+  v_result text;
+  v_guesses_submitted integer;
+  v_exact_hits_total integer;
+  v_partial_hits_total integer;
+  v_turns_used integer;
+begin
+  select * into v_match
+  from public.matches m
+  where m.id = p_match_id
+  for update;
+
+  if v_match.id is null then
+    raise exception 'Match not found';
+  end if;
+
+  if v_match.state not in ('completed', 'canceled', 'expired') then
+    return;
+  end if;
+
+  if coalesce(v_match.stats_applied, false) then
+    return;
+  end if;
+
+  for v_user_id in
+    select mp.user_id
+    from public.match_players mp
+    where mp.match_id = p_match_id
+  loop
+    if v_match.state = 'completed' and v_match.winner_user_id is not null then
+      v_result := case when v_user_id = v_match.winner_user_id then 'win' else 'loss' end;
+    elsif v_match.state = 'completed' then
+      v_result := 'draw';
+    else
+      v_result := 'abandoned';
+    end if;
+
+    select
+      count(*)::integer,
+      coalesce(sum(x.exact_hits), 0)::integer,
+      coalesce(sum(x.partial_hits), 0)::integer,
+      coalesce(max(x.turn_index), 0)::integer
+    into
+      v_guesses_submitted,
+      v_exact_hits_total,
+      v_partial_hits_total,
+      v_turns_used
+    from (
+      select
+        g.exact_hits,
+        g.partial_hits,
+        mt.turn_index
+      from public.guesses g
+      left join public.match_turns mt on mt.id = g.turn_id
+      where g.match_id = p_match_id
+        and g.actor_user_id = v_user_id
+
+      union all
+
+      select
+        dg.exact_hits,
+        dg.partial_hits,
+        dg.turn_index
+      from public.duel_guesses dg
+      where dg.match_id = p_match_id
+        and dg.attacker_user_id = v_user_id
+    ) as x;
+
+    insert into public.match_player_results (
+      match_id,
+      user_id,
+      result,
+      guesses_submitted,
+      exact_hits_total,
+      partial_hits_total,
+      turns_used,
+      completed_at
+    )
+    values (
+      p_match_id,
+      v_user_id,
+      v_result,
+      v_guesses_submitted,
+      v_exact_hits_total,
+      v_partial_hits_total,
+      v_turns_used,
+      now()
+    )
+    on conflict (match_id, user_id)
+    do update set
+      result = excluded.result,
+      guesses_submitted = excluded.guesses_submitted,
+      exact_hits_total = excluded.exact_hits_total,
+      partial_hits_total = excluded.partial_hits_total,
+      turns_used = excluded.turns_used,
+      completed_at = excluded.completed_at;
+
+    insert into public.user_game_stats (
+      user_id,
+      matches_played,
+      matches_won,
+      matches_lost,
+      matches_drawn,
+      matches_abandoned,
+      guesses_submitted,
+      exact_hits_total,
+      partial_hits_total,
+      last_match_at
+    )
+    values (
+      v_user_id,
+      1,
+      case when v_result = 'win' then 1 else 0 end,
+      case when v_result = 'loss' then 1 else 0 end,
+      case when v_result = 'draw' then 1 else 0 end,
+      case when v_result = 'abandoned' then 1 else 0 end,
+      v_guesses_submitted,
+      v_exact_hits_total,
+      v_partial_hits_total,
+      now()
+    )
+    on conflict (user_id)
+    do update set
+      matches_played = public.user_game_stats.matches_played + 1,
+      matches_won = public.user_game_stats.matches_won + case when v_result = 'win' then 1 else 0 end,
+      matches_lost = public.user_game_stats.matches_lost + case when v_result = 'loss' then 1 else 0 end,
+      matches_drawn = public.user_game_stats.matches_drawn + case when v_result = 'draw' then 1 else 0 end,
+      matches_abandoned = public.user_game_stats.matches_abandoned + case when v_result = 'abandoned' then 1 else 0 end,
+      guesses_submitted = public.user_game_stats.guesses_submitted + v_guesses_submitted,
+      exact_hits_total = public.user_game_stats.exact_hits_total + v_exact_hits_total,
+      partial_hits_total = public.user_game_stats.partial_hits_total + v_partial_hits_total,
+      last_match_at = now(),
+      updated_at = now();
+  end loop;
+
+  update public.matches
+  set
+    stats_applied = true,
+    updated_at = now()
+  where id = p_match_id;
+end;
+$$;
+
 -- Atomic gameplay functions
 create or replace function public.create_match(
   p_mode_id uuid,
@@ -211,7 +490,7 @@ as $$
 declare
   v_uid uuid;
   v_match public.matches;
-  v_allowed_symbols text[] := array['circle', 'pentagon', 'square', 'change_history', 'star', 'diamond'];
+  v_allowed_symbols text[] := array['circle', 'pentagon', 'square', 'change_history', 'star', 'diamond', 'hexagon', 'bolt'];
   v_secret_symbols text[] := array[]::text[];
   v_i integer;
 begin
@@ -264,6 +543,11 @@ begin
   values (v_match.id, v_uid, 1, true)
   on conflict (match_id, user_id) do nothing;
 
+  insert into public.duel_secret_codes (match_id, owner_user_id, secret_payload, is_locked)
+  values (v_match.id, v_uid, to_jsonb(v_secret_symbols), true)
+  on conflict (match_id, owner_user_id)
+  do update set secret_payload = excluded.secret_payload, is_locked = true, updated_at = now();
+
   return v_match;
 end;
 $$;
@@ -283,7 +567,7 @@ declare
   v_turn public.match_turns;
   v_guess public.guesses;
   v_next_user_id uuid;
-  v_allowed_symbols text[] := array['circle', 'pentagon', 'square', 'change_history', 'star', 'diamond'];
+  v_allowed_symbols text[] := array['circle', 'pentagon', 'square', 'change_history', 'star', 'diamond', 'hexagon', 'bolt'];
   v_secret_symbols text[] := array[]::text[];
   v_guess_row jsonb;
   v_secret_row jsonb;
@@ -292,6 +576,7 @@ declare
   v_guess_count integer;
   v_secret_count integer;
   v_is_win boolean := false;
+  v_empty_hits integer := 0;
   v_i integer;
 begin
   v_uid := auth.uid();
@@ -366,26 +651,17 @@ begin
     where id = p_match_id;
   end if;
 
-  for v_i in 0..3 loop
-    if v_guess_row ->> v_i = v_secret_row ->> v_i then
-      v_exact_hits := v_exact_hits + 1;
-    end if;
-  end loop;
-
-  for v_i in array_lower(v_allowed_symbols, 1)..array_upper(v_allowed_symbols, 1) loop
-    select count(*) into v_guess_count
-    from jsonb_array_elements_text(v_guess_row) as g(value)
-    where g.value = v_allowed_symbols[v_i];
-
-    select count(*) into v_secret_count
-    from jsonb_array_elements_text(v_secret_row) as s(value)
-    where s.value = v_allowed_symbols[v_i];
-
-    v_partial_hits := v_partial_hits + least(v_guess_count, v_secret_count);
-  end loop;
-
-  v_partial_hits := greatest(0, v_partial_hits - v_exact_hits);
-  v_is_win := v_exact_hits = 4;
+  select
+    f.exact_hits,
+    f.partial_hits,
+    f.empty_hits,
+    f.is_win
+  into
+    v_exact_hits,
+    v_partial_hits,
+    v_empty_hits,
+    v_is_win
+  from public.calculate_mastermind_feedback(v_guess_row, v_secret_row, v_allowed_symbols) f;
 
   select * into v_turn
   from public.match_turns t
@@ -463,6 +739,16 @@ begin
     where id = p_match_id;
   end if;
 
+  if exists (
+    select 1
+    from public.matches m
+    where m.id = p_match_id
+      and m.state in ('completed', 'canceled', 'expired')
+      and coalesce(m.stats_applied, false) = false
+  ) then
+    perform public.apply_match_outcome_stats(p_match_id);
+  end if;
+
   return v_guess;
 end;
 $$;
@@ -480,7 +766,7 @@ as $$
 declare
   v_uid uuid;
   v_match public.matches;
-  v_allowed_symbols text[] := array['circle', 'pentagon', 'square', 'change_history', 'star', 'diamond'];
+  v_allowed_symbols text[] := array['circle', 'pentagon', 'square', 'change_history', 'star', 'diamond', 'hexagon', 'bolt'];
   v_secret_symbols text[] := array[]::text[];
   v_i integer;
 begin
@@ -568,6 +854,10 @@ begin
   values (v_match.id, v_uid, 1, true)
   on conflict (match_id, user_id) do nothing;
 
+  insert into public.duel_secret_codes (match_id, owner_user_id)
+  values (v_match.id, v_uid)
+  on conflict (match_id, owner_user_id) do update set updated_at = now();
+
   return v_match;
 end;
 $$;
@@ -599,7 +889,7 @@ as $$
 declare
   v_uid uuid;
   v_match public.matches;
-  v_allowed_symbols text[] := array['circle', 'pentagon', 'square', 'change_history', 'star', 'diamond'];
+  v_allowed_symbols text[] := array['circle', 'pentagon', 'square', 'change_history', 'star', 'diamond', 'hexagon', 'bolt'];
   v_secret_symbols text[] := array[]::text[];
   v_i integer;
 begin
@@ -663,7 +953,370 @@ begin
   on conflict (match_id, user_id) do update
   set seat = excluded.seat;
 
+  insert into public.duel_secret_codes (match_id, owner_user_id)
+  values
+    (v_match.id, v_uid),
+    (v_match.id, p_opponent_id)
+  on conflict (match_id, owner_user_id) do update set updated_at = now();
+
   return v_match;
+end;
+$$;
+
+create or replace function public.set_duel_secret_code(
+  p_match_id uuid,
+  p_payload jsonb
+)
+returns public.duel_secret_codes
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid;
+  v_match public.matches;
+  v_row public.duel_secret_codes;
+  v_symbols jsonb;
+  v_allowed_symbols text[] := array['circle', 'pentagon', 'square', 'change_history', 'star', 'diamond', 'hexagon', 'bolt'];
+begin
+  v_uid := auth.uid();
+
+  if v_uid is null then
+    raise exception 'Authentication required';
+  end if;
+
+  if not exists (
+    select 1 from public.match_players mp
+    where mp.match_id = p_match_id and mp.user_id = v_uid
+  ) then
+    raise exception 'Not participant of this match';
+  end if;
+
+  select * into v_match
+  from public.matches m
+  where m.id = p_match_id
+  for update;
+
+  if v_match.id is null then
+    raise exception 'Match not found';
+  end if;
+
+  if v_match.state in ('completed', 'canceled', 'expired') then
+    raise exception 'Match already closed';
+  end if;
+
+  v_symbols := coalesce(p_payload -> 'row', '[]'::jsonb);
+
+  if jsonb_typeof(v_symbols) is distinct from 'array' or jsonb_array_length(v_symbols) <> 4 then
+    raise exception 'Secret row must contain exactly 4 symbols';
+  end if;
+
+  if exists (
+    select 1
+    from jsonb_array_elements_text(v_symbols) as s(value)
+    where not (s.value = any (v_allowed_symbols))
+  ) then
+    raise exception 'Secret row contains invalid symbols';
+  end if;
+
+  insert into public.duel_secret_codes (match_id, owner_user_id, secret_payload, is_locked, updated_at)
+  values (p_match_id, v_uid, v_symbols, true, now())
+  on conflict (match_id, owner_user_id)
+  do update set
+    secret_payload = excluded.secret_payload,
+    is_locked = true,
+    updated_at = now()
+  returning * into v_row;
+
+  if (
+    select count(*)
+    from public.duel_secret_codes dsc
+    where dsc.match_id = p_match_id
+      and dsc.is_locked = true
+      and dsc.secret_payload is not null
+  ) >= 2 and v_match.state = 'waiting_opponent' then
+    update public.matches
+    set
+      state = 'active',
+      started_at = coalesce(started_at, now()),
+      updated_at = now()
+    where id = p_match_id;
+  end if;
+
+  return v_row;
+end;
+$$;
+
+create or replace function public.submit_duel_guess(
+  p_match_id uuid,
+  p_payload jsonb
+)
+returns public.duel_guesses
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid;
+  v_match public.matches;
+  v_target_user_id uuid;
+  v_target_secret jsonb;
+  v_guess_row jsonb;
+  v_guess public.duel_guesses;
+  v_turn_index integer;
+  v_exact_hits integer := 0;
+  v_partial_hits integer := 0;
+  v_guess_count integer;
+  v_secret_count integer;
+  v_is_win boolean := false;
+  v_empty_hits integer := 0;
+  v_allowed_symbols text[] := array['circle', 'pentagon', 'square', 'change_history', 'star', 'diamond', 'hexagon', 'bolt'];
+  v_i integer;
+begin
+  v_uid := auth.uid();
+
+  if v_uid is null then
+    raise exception 'Authentication required';
+  end if;
+
+  if not exists (
+    select 1 from public.match_players mp
+    where mp.match_id = p_match_id and mp.user_id = v_uid
+  ) then
+    raise exception 'Not participant of this match';
+  end if;
+
+  select * into v_match
+  from public.matches m
+  where m.id = p_match_id
+  for update;
+
+  if v_match.id is null then
+    raise exception 'Match not found';
+  end if;
+
+  if v_match.state <> 'active' then
+    raise exception 'Match is not active';
+  end if;
+
+  select mp.user_id into v_target_user_id
+  from public.match_players mp
+  where mp.match_id = p_match_id
+    and mp.user_id <> v_uid
+  order by mp.seat
+  limit 1;
+
+  if v_target_user_id is null then
+    raise exception 'No opponent found';
+  end if;
+
+  select dsc.secret_payload into v_target_secret
+  from public.duel_secret_codes dsc
+  where dsc.match_id = p_match_id
+    and dsc.owner_user_id = v_target_user_id
+    and dsc.is_locked = true;
+
+  if v_target_secret is null then
+    raise exception 'Opponent secret not ready';
+  end if;
+
+  v_guess_row := coalesce(p_payload -> 'row', '[]'::jsonb);
+
+  if jsonb_typeof(v_guess_row) is distinct from 'array' or jsonb_array_length(v_guess_row) <> 4 then
+    raise exception 'Payload row must contain exactly 4 symbols';
+  end if;
+
+  if exists (
+    select 1
+    from jsonb_array_elements_text(v_guess_row) as g(value)
+    where not (g.value = any (v_allowed_symbols))
+  ) then
+    raise exception 'Payload row contains invalid symbols';
+  end if;
+
+  select coalesce(max(dg.turn_index), 0) + 1 into v_turn_index
+  from public.duel_guesses dg
+  where dg.match_id = p_match_id and dg.attacker_user_id = v_uid;
+
+  if v_turn_index > v_match.max_turns then
+    raise exception 'Maximum turns reached';
+  end if;
+
+  select
+    f.exact_hits,
+    f.partial_hits,
+    f.empty_hits,
+    f.is_win
+  into
+    v_exact_hits,
+    v_partial_hits,
+    v_empty_hits,
+    v_is_win
+  from public.calculate_mastermind_feedback(v_guess_row, v_target_secret, v_allowed_symbols) f;
+
+  insert into public.duel_guesses (
+    match_id,
+    attacker_user_id,
+    target_user_id,
+    turn_index,
+    payload,
+    exact_hits,
+    partial_hits,
+    is_win
+  )
+  values (
+    p_match_id,
+    v_uid,
+    v_target_user_id,
+    v_turn_index,
+    p_payload,
+    v_exact_hits,
+    v_partial_hits,
+    v_is_win
+  )
+  returning * into v_guess;
+
+  if v_is_win then
+    update public.duel_secret_codes
+    set
+      solved_at = now(),
+      solved_by_user_id = v_uid,
+      solved_in_turn = v_turn_index,
+      updated_at = now()
+    where match_id = p_match_id
+      and owner_user_id = v_target_user_id
+      and solved_at is null;
+
+    update public.matches
+    set
+      state = 'completed',
+      ended_at = now(),
+      winner_user_id = v_uid,
+      current_turn_user_id = null,
+      updated_at = now()
+    where id = p_match_id
+      and state = 'active';
+  elsif (
+    select count(*)
+    from public.duel_guesses dg
+    where dg.match_id = p_match_id
+      and dg.attacker_user_id = v_uid
+  ) >= v_match.max_turns and (
+    select count(*)
+    from public.duel_guesses dg
+    where dg.match_id = p_match_id
+      and dg.attacker_user_id = v_target_user_id
+  ) >= v_match.max_turns then
+    update public.matches
+    set
+      state = 'completed',
+      ended_at = now(),
+      current_turn_user_id = null,
+      updated_at = now()
+    where id = p_match_id
+      and state = 'active';
+  end if;
+
+  if exists (
+    select 1
+    from public.matches m
+    where m.id = p_match_id
+      and m.state in ('completed', 'canceled', 'expired')
+      and coalesce(m.stats_applied, false) = false
+  ) then
+    perform public.apply_match_outcome_stats(p_match_id);
+  end if;
+
+  return v_guess;
+end;
+$$;
+
+create or replace function public.get_duel_board(
+  p_match_id uuid
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid;
+  v_opponent_id uuid;
+  v_my_secret_ready boolean := false;
+  v_opponent_secret_ready boolean := false;
+  v_result jsonb;
+begin
+  v_uid := auth.uid();
+
+  if v_uid is null then
+    raise exception 'Authentication required';
+  end if;
+
+  if not exists (
+    select 1 from public.match_players mp
+    where mp.match_id = p_match_id and mp.user_id = v_uid
+  ) then
+    raise exception 'Not participant of this match';
+  end if;
+
+  select mp.user_id into v_opponent_id
+  from public.match_players mp
+  where mp.match_id = p_match_id and mp.user_id <> v_uid
+  order by mp.seat
+  limit 1;
+
+  select exists (
+    select 1
+    from public.duel_secret_codes dsc
+    where dsc.match_id = p_match_id
+      and dsc.owner_user_id = v_uid
+      and dsc.is_locked = true
+      and dsc.secret_payload is not null
+  ) into v_my_secret_ready;
+
+  select exists (
+    select 1
+    from public.duel_secret_codes dsc
+    where dsc.match_id = p_match_id
+      and dsc.owner_user_id = v_opponent_id
+      and dsc.is_locked = true
+      and dsc.secret_payload is not null
+  ) into v_opponent_secret_ready;
+
+  select jsonb_build_object(
+    'mySecretReady', v_my_secret_ready,
+    'opponentSecretReady', v_opponent_secret_ready,
+    'myGuesses', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'id', dg.id,
+        'turn', dg.turn_index,
+        'row', coalesce(dg.payload -> 'row', '[]'::jsonb),
+        'exactHits', dg.exact_hits,
+        'partialHits', dg.partial_hits,
+        'isWin', dg.is_win,
+        'createdAt', dg.created_at
+      ) order by dg.turn_index asc)
+      from public.duel_guesses dg
+      where dg.match_id = p_match_id
+        and dg.attacker_user_id = v_uid
+    ), '[]'::jsonb),
+    'opponentGuesses', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'id', dg.id,
+        'turn', dg.turn_index,
+        'row', coalesce(dg.payload -> 'row', '[]'::jsonb),
+        'exactHits', dg.exact_hits,
+        'partialHits', dg.partial_hits,
+        'isWin', dg.is_win,
+        'createdAt', dg.created_at
+      ) order by dg.turn_index asc)
+      from public.duel_guesses dg
+      where dg.match_id = p_match_id
+        and dg.attacker_user_id = v_opponent_id
+    ), '[]'::jsonb)
+  ) into v_result;
+
+  return coalesce(v_result, '{}'::jsonb);
 end;
 $$;
 

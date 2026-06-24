@@ -71,6 +71,23 @@ export type MatchGuess = {
   created_at: string
 }
 
+export type DuelGuessRow = {
+  id: string
+  turn: number
+  row: string[]
+  exactHits: number
+  partialHits: number
+  isWin: boolean
+  createdAt: string
+}
+
+export type DuelBoardData = {
+  mySecretReady: boolean
+  opponentSecretReady: boolean
+  myGuesses: DuelGuessRow[]
+  opponentGuesses: DuelGuessRow[]
+}
+
 type SignUpParams = {
   email: string
   password: string
@@ -442,4 +459,69 @@ export async function fetchMatchGuesses(matchId: string): Promise<MatchGuess[]> 
 
   if (error) throw error
   return (data ?? []) as MatchGuess[]
+}
+
+export async function setDuelSecretCode(matchId: string, row: string[]): Promise<Record<string, unknown>> {
+  if (!supabase) throw new Error('Supabase is not configured')
+
+  const cleanRow = (row ?? []).map((value) => String(value ?? ''))
+  if (cleanRow.length !== 4) throw new Error('Secret row must contain 4 symbols')
+
+  const { data, error } = await supabase.rpc('set_duel_secret_code', {
+    p_match_id: matchId,
+    p_payload: { row: cleanRow },
+  })
+
+  if (error) throw error
+  return (data ?? {}) as Record<string, unknown>
+}
+
+export async function submitDuelGuess(matchId: string, row: string[]): Promise<Record<string, unknown>> {
+  if (!supabase) throw new Error('Supabase is not configured')
+
+  const cleanRow = (row ?? []).map((value) => String(value ?? ''))
+  if (cleanRow.length !== 4) throw new Error('Guess row must contain 4 symbols')
+
+  const { data, error } = await supabase.rpc('submit_duel_guess', {
+    p_match_id: matchId,
+    p_payload: { row: cleanRow },
+  })
+
+  if (error) throw error
+  return (data ?? {}) as Record<string, unknown>
+}
+
+export async function fetchDuelBoard(matchId: string): Promise<DuelBoardData> {
+  if (!supabase) {
+    return {
+      mySecretReady: false,
+      opponentSecretReady: false,
+      myGuesses: [],
+      opponentGuesses: [],
+    }
+  }
+
+  const { data, error } = await supabase.rpc('get_duel_board', {
+    p_match_id: matchId,
+  })
+
+  if (error) throw error
+
+  const payload = (data ?? {}) as {
+    mySecretReady?: unknown
+    opponentSecretReady?: unknown
+    myGuesses?: unknown
+    opponentGuesses?: unknown
+  }
+
+  return {
+    mySecretReady: Boolean(payload.mySecretReady),
+    opponentSecretReady: Boolean(payload.opponentSecretReady),
+    myGuesses: Array.isArray(payload.myGuesses)
+      ? (payload.myGuesses as DuelGuessRow[])
+      : [],
+    opponentGuesses: Array.isArray(payload.opponentGuesses)
+      ? (payload.opponentGuesses as DuelGuessRow[])
+      : [],
+  }
 }

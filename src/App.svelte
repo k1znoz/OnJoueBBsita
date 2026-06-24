@@ -43,6 +43,9 @@
     signOutUser,
     signUpUser,
     startModeMatch,
+    setMatchSecretCode,
+    fetchMatchDuelBoard,
+    submitDuelGuessRow,
     submitMatchGuessRow,
   } from './lib/mvc/controller/useCases'
   import { createAppStateStore, emptyAsyncRow } from './lib/mvc/controller/appState'
@@ -99,14 +102,23 @@
   async function loadMatchHistory(matchId: string | null) {
     try {
       const historyData = await fetchGuessHistoryData(matchId, get(appState).currentUser)
+      const board = matchId ? await fetchMatchDuelBoard(matchId) : null
       patchState({
         guessHistory: historyData.guessHistory,
         asyncAttempt: historyData.asyncAttempt,
+        myDuelGuesses: board?.myGuesses ?? [],
+        opponentDuelGuesses: board?.opponentGuesses ?? [],
+        mySecretReady: board?.mySecretReady ?? false,
+        opponentSecretReady: board?.opponentSecretReady ?? false,
       })
     } catch {
       patchState({
         guessHistory: [],
         asyncAttempt: 1,
+        myDuelGuesses: [],
+        opponentDuelGuesses: [],
+        mySecretReady: false,
+        opponentSecretReady: false,
       })
     }
   }
@@ -484,6 +496,50 @@
     patchState({ asyncSlot: index })
   }
 
+  function placeSecretPeg(peg: PalettePeg) {
+    const state = get(appState)
+    if (state.mySecretReady) return
+
+    const next = placePegInRow(state.secretRow, state.secretSlot, peg)
+    patchState({
+      secretRow: next.row,
+      secretSlot: next.nextSlot,
+    })
+  }
+
+  function setSecretSlot(index: number) {
+    patchState({ secretSlot: index })
+  }
+
+  async function submitSecretRow() {
+    const state = get(appState)
+    if (state.isSubmittingSecret || state.mySecretReady) return
+
+    if (!state.currentMatchId) {
+      patchState({ toast: 'Aucune session active.' })
+      return
+    }
+
+    if (state.secretRow.some((peg) => !peg)) {
+      patchState({ toast: 'Complete les 4 slots avant de verrouiller ton code.' })
+      return
+    }
+
+    try {
+      patchState({ isSubmittingSecret: true })
+      await setMatchSecretCode({ matchId: state.currentMatchId, row: state.secretRow })
+      patchState({
+        mySecretReady: true,
+        toast: 'Code secret verrouille.',
+      })
+      await loadMatchHistory(state.currentMatchId)
+    } catch (error) {
+      patchState({ toast: getErrorMessage(error, 'Impossible de verrouiller le code secret.') })
+    } finally {
+      patchState({ isSubmittingSecret: false })
+    }
+  }
+
   async function submitAsyncRow() {
     const state = get(appState)
     if (state.isSubmittingGuess) return
@@ -504,7 +560,11 @@
 
     try {
       patchState({ isSubmittingGuess: true })
-      await submitMatchGuessRow({ matchId: state.currentMatchId as string, row: state.asyncRow })
+      if (state.opponentSecretReady) {
+        await submitDuelGuessRow({ matchId: state.currentMatchId as string, row: state.asyncRow })
+      } else {
+        await submitMatchGuessRow({ matchId: state.currentMatchId as string, row: state.asyncRow })
+      }
 
       patchState({
         asyncRow: emptyAsyncRow(),
@@ -607,9 +667,19 @@
         asyncRow={$appState.asyncRow}
         asyncSlot={$appState.asyncSlot}
         {asyncPalette}
+        mySecretReady={$appState.mySecretReady}
+        opponentSecretReady={$appState.opponentSecretReady}
+        secretRow={$appState.secretRow}
+        secretSlot={$appState.secretSlot}
+        isSubmittingSecret={$appState.isSubmittingSecret}
+        myDuelGuesses={$appState.myDuelGuesses}
+        opponentDuelGuesses={$appState.opponentDuelGuesses}
         isSubmittingGuess={$appState.isSubmittingGuess}
         onSetSlot={setAsyncSlot}
         onPlacePeg={placeAsyncPeg}
+        onSetSecretSlot={setSecretSlot}
+        onPlaceSecretPeg={placeSecretPeg}
+        onSubmitSecret={submitSecretRow}
         onSubmitRow={submitAsyncRow}
       />
     {/if}

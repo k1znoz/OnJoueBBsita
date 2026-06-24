@@ -7,6 +7,8 @@ export const asyncPalette: PalettePeg[] = [
   { symbol: 'change_history', tone: 'error' },
   { symbol: 'star', tone: 'neutral' },
   { symbol: 'diamond', tone: 'neutral' },
+  { symbol: 'hexagon', tone: 'primary' },
+  { symbol: 'bolt', tone: 'secondary' },
 ]
 
 export const viewTitle: Record<View, string> = {

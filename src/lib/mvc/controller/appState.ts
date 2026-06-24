@@ -9,6 +9,7 @@ import type {
   OpponentCandidate,
   PalettePeg,
   PlayerMessage,
+  DuelGuessEntry,
   UserProfile,
   View,
 } from '../model/types'
@@ -45,6 +46,13 @@ export type AppState = {
   asyncSlot: number
   asyncAttempt: number
   guessHistory: GuessHistoryEntry[]
+  myDuelGuesses: DuelGuessEntry[]
+  opponentDuelGuesses: DuelGuessEntry[]
+  mySecretReady: boolean
+  opponentSecretReady: boolean
+  secretRow: Array<PalettePeg | null>
+  secretSlot: number
+  isSubmittingSecret: boolean
   isSubmittingGuess: boolean
 }
 
@@ -85,6 +93,13 @@ export function initialAppState(): AppState {
     asyncSlot: 0,
     asyncAttempt: 1,
     guessHistory: [],
+    myDuelGuesses: [],
+    opponentDuelGuesses: [],
+    mySecretReady: false,
+    opponentSecretReady: false,
+    secretRow: emptyAsyncRow(),
+    secretSlot: 0,
+    isSubmittingSecret: false,
     isSubmittingGuess: false,
   }
 }

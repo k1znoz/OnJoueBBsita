@@ -1,218 +1,57 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import type { User } from '@supabase/supabase-js'
-  import {
-    acceptDuelInvite,
-    cancelMatch,
-    createDuelInvite,
-    createMatch,
-    deleteMatch,
-    fetchCurrentUser,
-    fetchActiveGameModes,
-    fetchDailyChallenge,
-    fetchDuelInvitations,
-    fetchMatchGuesses,
-    fetchMessagesWithUser,
-    fetchOpponentCandidates,
-    joinOrCreateDuel,
-    fetchMyMatches,
-    fetchMyProfile,
-    signInWithEmail,
-    signOutCurrentUser,
-    signUpWithEmail,
-    sendPlayerMessage,
-    submitGuess,
-    updateMyProfile,
-  } from './lib/supabase/services'
+  import { get } from 'svelte/store'
   import { hasSupabaseConfig, supabase } from './lib/supabase/client'
+  import TopBar from './lib/mvc/view/components/TopBar.svelte'
+  import LobbyPanel from './lib/mvc/view/components/LobbyPanel.svelte'
+  import ModesPanel from './lib/mvc/view/components/ModesPanel.svelte'
+  import AsyncPanel from './lib/mvc/view/components/AsyncPanel.svelte'
+  import CommunicationPanel from './lib/mvc/view/components/CommunicationPanel.svelte'
+  import AuthPanel from './lib/mvc/view/components/AuthPanel.svelte'
+  import ProfilePanel from './lib/mvc/view/components/ProfilePanel.svelte'
+  import BottomNav from './lib/mvc/view/components/BottomNav.svelte'
+  import type {
+    ActiveMatchCard,
+    DuelInvitation,
+    ModeCard,
+    PalettePeg,
+    View,
+  } from './lib/mvc/model/types'
+  import { getErrorMessage } from './lib/mvc/model/mappers'
+  import { asyncPalette } from './lib/mvc/model/constants'
+  import {
+    canCancelMatch as policyCanCancelMatch,
+    canDeleteMatch as policyCanDeleteMatch,
+    getNavigationBlocker,
+    getSubmitGuessBlocker,
+    placePegInRow,
+  } from './lib/mvc/model/gamePolicies'
+  import {
+    fetchCommunicationData,
+    fetchGuessHistoryData,
+    fetchHydrationData,
+    normalizeHandleInput,
+  } from './lib/mvc/controller/appController'
+  import {
+    acceptInvitationMatch,
+    createDuelInvitation,
+    manageMatchLifecycle,
+    openMatchWithAutoAccept,
+    saveUserProfileHandle,
+    sendChatMessage,
+    signInUser,
+    signOutUser,
+    signUpUser,
+    startModeMatch,
+    submitMatchGuessRow,
+  } from './lib/mvc/controller/useCases'
+  import { createAppStateStore, emptyAsyncRow } from './lib/mvc/controller/appState'
+  import type { AppState } from './lib/mvc/controller/appState'
 
-  type View = 'lobby' | 'modes' | 'async' | 'communication' | 'auth' | 'profile'
+  const appState = createAppStateStore()
 
-  type Tone = 'primary' | 'secondary' | 'tertiary' | 'error' | 'neutral'
-  type FeedbackDot = 'black' | 'white' | 'empty'
-
-  type PalettePeg = {
-    symbol: string
-    tone: Tone
-  }
-
-  type GameModeRow = {
-    id: string
-    code: string
-    title: string
-    short_description: string | null
-    sort_order: number
-  }
-
-  type ModeCard = {
-    modeId: string
-    code: string
-    icon: string
-    title: string
-    description: string
-    cta: string
-    tone: 'primary' | 'secondary' | 'tertiary'
-    route: 'async' | null
-    intense?: boolean
-    queueType: 'solo' | 'duel'
-  }
-
-  type MatchRow = {
-    id: string
-    state: string
-    turn_number: number | null
-    max_turns: number | null
-    mode_id: string
-    created_by_user_id: string
-    updated_at: string | null
-  }
-
-  type ActiveMatchCard = {
-    id: string
-    name: string
-    mode: string
-    tries: string
-    progress: number
-    status: 'En attente' | 'A votre tour' | 'Terminee'
-    state: string
-    maxTurns: number
-    turnNumber: number
-    createdByUserId: string
-  }
-
-  type OpponentCandidate = {
-    id: string
-    handle: string
-  }
-
-  type DuelInvitation = {
-    match_id: string
-    mode_id: string
-    mode_title: string
-    inviter_id: string
-    inviter_handle: string
-    created_at: string
-  }
-
-  type PlayerMessage = {
-    id: string
-    sender_user_id: string
-    recipient_user_id: string
-    body: string
-    created_at: string
-  }
-
-  type GuessHistoryEntry = {
-    id: string
-    row: string[]
-    exactHits: number
-    partialHits: number
-    isWin: boolean
-    createdAt: string
-  }
-
-  type DailyChallengeRow = {
-    id: string
-    challenge_date: string
-    title: string
-    description: string | null
-    reward_credits: number
-    difficulty: string | null
-  }
-
-  type UserProfile = {
-    id: string
-    handle: string | null
-    credits: number
-    rank_tier: string | null
-  }
-
-  const modeTones: Array<ModeCard['tone']> = ['primary', 'secondary', 'tertiary']
-  const symbolToneMap: Record<string, Tone> = {
-    circle: 'primary',
-    pentagon: 'secondary',
-    square: 'tertiary',
-    change_history: 'error',
-    star: 'neutral',
-    diamond: 'neutral',
-  }
-
-  function getErrorMessage(error: unknown, fallback: string): string {
-    if (error && typeof error === 'object' && 'message' in error) {
-      const message = (error as { message?: unknown }).message
-      if (typeof message === 'string' && message.trim()) return message
-    }
-
-    return fallback
-  }
-
-  async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
-    let timer: ReturnType<typeof setTimeout> | null = null
-
-    try {
-      return await Promise.race([
-        promise,
-        new Promise<T>((resolve) => {
-          timer = setTimeout(() => resolve(fallback), timeoutMs)
-        }),
-      ])
-    } finally {
-      if (timer) clearTimeout(timer)
-    }
-  }
-
-  let modeCards: ModeCard[] = []
-  let activeMatches: ActiveMatchCard[] = []
-  let opponentCandidates: OpponentCandidate[] = []
-  let duelInvitations: DuelInvitation[] = []
-  let selectedChatUserId = ''
-  let chatMessages: PlayerMessage[] = []
-  let chatInput = ''
-  let communicationLoading = false
-  let sendingMessage = false
-  let managingMatchId: string | null = null
-  let selectedOpponentId = ''
-  let duelLoading = false
-
-  const asyncPalette: PalettePeg[] = [
-    { symbol: 'circle', tone: 'primary' },
-    { symbol: 'pentagon', tone: 'secondary' },
-    { symbol: 'square', tone: 'tertiary' },
-    { symbol: 'change_history', tone: 'error' },
-    { symbol: 'star', tone: 'neutral' },
-    { symbol: 'diamond', tone: 'neutral' },
-  ]
-
-  let currentView: View = 'lobby'
-  let currentMatchId: string | null = null
-  let dailyChallenge: DailyChallengeRow | null = null
-  let currentUser: User | null = null
-  let myProfile: UserProfile | null = null
-  let isLoading = true
-  let authLoading = false
-  let signOutLoading = false
-  let profileSaving = false
-  let coins = 0
-  let toast = ''
-
-  let authEmail = ''
-  let authPassword = ''
-  let authHandle = ''
-  let profileHandle = ''
-
-  let asyncRow: Array<PalettePeg | null> = [null, null, null, null]
-  let asyncSlot = 0
-  let asyncAttempt = 1
-  let guessHistory: GuessHistoryEntry[] = []
-  let isSubmittingGuess = false
-
-  const viewTitle: Record<View, string> = {
-    lobby: 'Lobby',
-    modes: 'Modes',
-    async: 'Session',
-    communication: 'Communication',
-    auth: 'Compte',
-    profile: 'Profil',
+  function patchState(payload: Partial<AppState>) {
+    appState.update((state) => ({ ...state, ...payload }))
   }
 
   onMount(() => {
@@ -221,10 +60,11 @@
     if (!supabase) return
 
     const refreshTimer = setInterval(() => {
-      if (currentUser) {
-        hydrateApp(currentMatchId)
+      const state = get(appState)
+      if (state.currentUser) {
+        hydrateApp(state.currentMatchId)
 
-        if (currentView === 'communication') {
+        if (state.currentView === 'communication') {
           void loadCommunication()
         }
       }
@@ -233,17 +73,16 @@
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      currentUser = session?.user ?? null
+      patchState({ currentUser: session?.user ?? null })
 
       if (!session?.user) {
-        myProfile = null
-        profileHandle = ''
-        coins = 0
-        activeMatches = []
-
-        if (currentView === 'profile' || currentView === 'async' || currentView === 'communication') {
-          currentView = 'auth'
-        }
+        patchState({
+          myProfile: null,
+          coins: 0,
+          activeMatches: [],
+          profileHandle: '',
+          currentView: ['profile', 'async', 'communication'].includes(get(appState).currentView) ? 'auth' : get(appState).currentView,
+        })
 
         return
       }
@@ -257,180 +96,97 @@
     }
   })
 
-  function normalizeGuessRow(payload: unknown): string[] {
-    if (!payload || typeof payload !== 'object') return []
-
-    const maybeRow = (payload as { row?: unknown }).row
-    if (!Array.isArray(maybeRow)) return []
-
-    return maybeRow.map((item) => String(item ?? '?'))
-  }
-
-  function toneForSymbol(symbol: string): Tone {
-    return symbolToneMap[symbol] ?? 'neutral'
-  }
-
-  function feedbackDots(exactHits: number, partialHits: number): FeedbackDot[] {
-    const blacks = Array(Math.max(0, exactHits)).fill('black') as FeedbackDot[]
-    const whites = Array(Math.max(0, partialHits)).fill('white') as FeedbackDot[]
-    const empties = Array(Math.max(0, 4 - exactHits - partialHits)).fill('empty') as FeedbackDot[]
-
-    return [...blacks, ...whites, ...empties].slice(0, 4)
-  }
-
   async function loadMatchHistory(matchId: string | null) {
-    if (!matchId || !currentUser) {
-      guessHistory = []
-      asyncAttempt = 1
-      return
-    }
-
     try {
-      const guesses = await withTimeout(fetchMatchGuesses(matchId), 7000, [])
-
-      guessHistory = guesses.map((guess) => ({
-        id: guess.id,
-        row: normalizeGuessRow(guess.payload),
-        exactHits: guess.exact_hits,
-        partialHits: guess.partial_hits,
-        isWin: guess.is_win,
-        createdAt: guess.created_at,
-      }))
-
-      asyncAttempt = guessHistory.length + 1
+      const historyData = await fetchGuessHistoryData(matchId, get(appState).currentUser)
+      patchState({
+        guessHistory: historyData.guessHistory,
+        asyncAttempt: historyData.asyncAttempt,
+      })
     } catch {
-      guessHistory = []
+      patchState({
+        guessHistory: [],
+        asyncAttempt: 1,
+      })
     }
   }
 
   async function hydrateApp(preferredMatchId: string | null = null) {
     if (!hasSupabaseConfig) {
-      isLoading = false
-      toast = 'Configuration Supabase manquante.'
+      patchState({
+        isLoading: false,
+        toast: 'Configuration Supabase manquante.',
+      })
       return
     }
 
     try {
-      isLoading = true
+      patchState({ isLoading: true })
 
-      const user = await withTimeout(fetchCurrentUser(), 7000, null)
-      currentUser = user
+      const state = get(appState)
 
-      const [profileRes, modesRes, matchesRes, challengeRes] = await Promise.allSettled([
-        withTimeout(fetchMyProfile(), 7000, null),
-        withTimeout(fetchActiveGameModes(), 7000, [] as GameModeRow[]),
-        withTimeout(fetchMyMatches(), 7000, [] as Array<MatchRow | MatchRow[]>),
-        withTimeout(fetchDailyChallenge(), 7000, null),
-      ])
-
-      const opponentRes = currentUser
-        ? await Promise.allSettled([withTimeout(fetchOpponentCandidates(), 7000, [] as OpponentCandidate[])])
-        : [{ status: 'fulfilled', value: [] }] as const
-
-      const profile = (profileRes.status === 'fulfilled' ? profileRes.value : null) as UserProfile | null
-      const modes = (modesRes.status === 'fulfilled' ? modesRes.value : []) as GameModeRow[]
-      const matches = (matchesRes.status === 'fulfilled' ? matchesRes.value : []) as Array<MatchRow | MatchRow[]>
-      const challenge = (challengeRes.status === 'fulfilled' ? challengeRes.value : null) as DailyChallengeRow | null
-
-      myProfile = profile
-      coins = profile?.credits ?? 0
-      dailyChallenge = challenge
-      profileHandle = profile?.handle ?? ''
-      opponentCandidates = (opponentRes[0].status === 'fulfilled' ? opponentRes[0].value : []) as OpponentCandidate[]
-
-      if (!selectedOpponentId || !opponentCandidates.some((op) => op.id === selectedOpponentId)) {
-        selectedOpponentId = opponentCandidates[0]?.id ?? ''
-      }
-
-      if (!selectedChatUserId || !opponentCandidates.some((op) => op.id === selectedChatUserId)) {
-        selectedChatUserId = opponentCandidates[0]?.id ?? ''
-      }
-
-      modeCards = (modes ?? [])
-        .filter((mode) => mode.code?.includes('async') || mode.code?.includes('classic') || mode.code?.includes('duel'))
-        .map((mode, index): ModeCard => ({
-        modeId: mode.id,
-        code: mode.code,
-        icon: 'extension',
-        title: mode.title,
-        description: mode.short_description ?? '',
-        cta: 'Jouer',
-        tone: modeTones[index % modeTones.length],
-        route: 'async',
-        queueType: mode.code?.includes('duel') ? 'duel' : 'solo',
-      }))
-
-      const modeById = new Map((modes ?? []).map((mode) => [mode.id, mode.title]))
-
-      const normalizedMatches = (matches ?? [])
-        .map((match) => (Array.isArray(match) ? match[0] : match))
-        .filter((match): match is MatchRow => Boolean(match?.id))
-
-      activeMatches = normalizedMatches.map((match): ActiveMatchCard => {
-        const maxTurns = match.max_turns || 1
-        const turnNumber = match.turn_number || 1
-        const progress = Math.max(0, Math.min(100, Math.round((turnNumber / maxTurns) * 100)))
-        const isDone = match.state === 'completed' || match.state === 'canceled' || match.state === 'expired'
-        const isWaiting = match.state === 'waiting_turn' || match.state === 'waiting_opponent'
-
-        return {
-          id: match.id,
-          name: `Partie ${match.id.slice(0, 8)}`,
-          mode: modeById.get(match.mode_id) ?? 'Mode',
-          tries: `${turnNumber}/${maxTurns}`,
-          progress,
-          status: isDone ? 'Terminee' : isWaiting ? 'En attente' : 'A votre tour',
-          state: match.state,
-          maxTurns,
-          turnNumber,
-          createdByUserId: match.created_by_user_id,
-        }
+      const hydration = await fetchHydrationData({
+        preferredMatchId,
+        selectedOpponentId: state.selectedOpponentId,
+        selectedChatUserId: state.selectedChatUserId,
       })
 
-      const hasPreferredMatch = preferredMatchId
-        ? activeMatches.some((match) => match.id === preferredMatchId)
-        : false
+      patchState({
+        currentUser: hydration.currentUser,
+        myProfile: hydration.profile,
+        coins: hydration.coins,
+        dailyChallenge: hydration.dailyChallenge,
+        profileHandle: hydration.profileHandle,
+        opponentCandidates: hydration.opponentCandidates,
+        selectedOpponentId: hydration.selectedOpponentId,
+        selectedChatUserId: hydration.selectedChatUserId,
+        modeCards: hydration.modeCards,
+        activeMatches: hydration.activeMatches,
+        currentMatchId: hydration.currentMatchId,
+      })
 
-      currentMatchId = hasPreferredMatch ? preferredMatchId : (activeMatches[0]?.id ?? preferredMatchId ?? null)
-      await loadMatchHistory(currentMatchId)
+      await loadMatchHistory(hydration.currentMatchId)
 
-      if (currentUser && currentView === 'communication') {
+      const nextState = get(appState)
+      if (nextState.currentUser && nextState.currentView === 'communication') {
         await loadCommunication()
       }
 
-      const loadErrors = []
-      if (profileRes.status === 'rejected') loadErrors.push('profil')
-      if (modesRes.status === 'rejected') loadErrors.push('modes')
-      if (matchesRes.status === 'rejected') loadErrors.push('parties')
-      if (challengeRes.status === 'rejected') loadErrors.push('defi')
-
-      if (loadErrors.length > 0) {
-        toast = `Chargement partiel (${loadErrors.join(', ')}).`
-      } else if (toast.startsWith('Chargement partiel')) {
-        toast = ''
+      if (hydration.loadErrors.length > 0) {
+        patchState({
+          toast: `Chargement partiel (${hydration.loadErrors.join(', ')}).`,
+        })
+      } else if (nextState.toast.startsWith('Chargement partiel')) {
+        patchState({ toast: '' })
       }
     } catch (error) {
-      toast = getErrorMessage(error, 'Erreur de chargement des donnees.')
+      patchState({ toast: getErrorMessage(error, 'Erreur de chargement des donnees.') })
     } finally {
-      isLoading = false
+      patchState({ isLoading: false })
     }
   }
 
   function goTo(view: View) {
-    if ((view === 'async' || view === 'profile' || view === 'communication') && !currentUser) {
-      toast = 'Connecte-toi pour acceder a cet espace.'
-      currentView = 'auth'
+    const state = get(appState)
+    const blocker = getNavigationBlocker(view, state.currentUser, state.currentMatchId)
+
+    if (blocker === 'auth_required') {
+      patchState({
+        toast: 'Connecte-toi pour acceder a cet espace.',
+        currentView: 'auth',
+      })
       return
     }
 
-    if (view === 'async' && !currentMatchId) {
-      toast = 'Aucune session active. Choisis un mode pour lancer une partie.'
-      currentView = 'modes'
+    if (blocker === 'match_required') {
+      patchState({
+        toast: 'Aucune session active. Choisis un mode pour lancer une partie.',
+        currentView: 'modes',
+      })
       return
     }
 
-    currentView = view
-    toast = ''
+    patchState({ currentView: view, toast: '' })
 
     if (view === 'communication') {
       void loadCommunication()
@@ -438,176 +194,182 @@
   }
 
   async function loadCommunication() {
-    if (!currentUser) return
-
     try {
-      communicationLoading = true
-      duelInvitations = await withTimeout(fetchDuelInvitations(), 7000, [])
-
-      if (selectedChatUserId) {
-        chatMessages = await withTimeout(fetchMessagesWithUser(selectedChatUserId), 7000, [])
-      } else {
-        chatMessages = []
-      }
+      patchState({ communicationLoading: true })
+      const state = get(appState)
+      const communication = await fetchCommunicationData(state.selectedChatUserId, state.currentUser)
+      patchState({
+        duelInvitations: communication.duelInvitations,
+        chatMessages: communication.chatMessages,
+      })
     } catch (error) {
-      toast = getErrorMessage(error, 'Chargement communication impossible.')
+      patchState({ toast: getErrorMessage(error, 'Chargement communication impossible.') })
     } finally {
-      communicationLoading = false
+      patchState({ communicationLoading: false })
     }
   }
 
   async function acceptInvitation(invite: DuelInvitation) {
     try {
-      await acceptDuelInvite(invite.match_id)
-      currentMatchId = invite.match_id
+      await acceptInvitationMatch(invite.match_id)
+      patchState({ currentMatchId: invite.match_id })
       await hydrateApp(invite.match_id)
       await loadCommunication()
-      toast = 'Invitation acceptee.'
+      patchState({ toast: 'Invitation acceptee.' })
       goTo('async')
     } catch (error) {
-      toast = getErrorMessage(error, 'Acceptation impossible.')
+      patchState({ toast: getErrorMessage(error, 'Acceptation impossible.') })
     }
   }
 
   async function refreshChatThread() {
-    if (!selectedChatUserId || !currentUser) {
-      chatMessages = []
-      return
-    }
-
     try {
-      communicationLoading = true
-      chatMessages = await withTimeout(fetchMessagesWithUser(selectedChatUserId), 7000, [])
+      patchState({ communicationLoading: true })
+      const state = get(appState)
+      const communication = await fetchCommunicationData(state.selectedChatUserId, state.currentUser)
+      patchState({ chatMessages: communication.chatMessages })
     } catch (error) {
-      toast = getErrorMessage(error, 'Chargement des messages impossible.')
+      patchState({ toast: getErrorMessage(error, 'Chargement des messages impossible.') })
     } finally {
-      communicationLoading = false
+      patchState({ communicationLoading: false })
     }
   }
 
   async function sendMessageToPlayer() {
-    if (sendingMessage) return
-    if (!selectedChatUserId) {
-      toast = 'Choisis un joueur pour discuter.'
+    const state = get(appState)
+    if (state.sendingMessage) return
+    if (!state.selectedChatUserId) {
+      patchState({ toast: 'Choisis un joueur pour discuter.' })
       return
     }
 
-    if (!chatInput.trim()) {
-      toast = 'Message vide.'
+    if (!state.chatInput.trim()) {
+      patchState({ toast: 'Message vide.' })
       return
     }
 
     try {
-      sendingMessage = true
-      await sendPlayerMessage(selectedChatUserId, chatInput)
-      chatInput = ''
+      patchState({ sendingMessage: true })
+      await sendChatMessage({ recipientUserId: state.selectedChatUserId, body: state.chatInput })
+      patchState({ chatInput: '' })
       await refreshChatThread()
     } catch (error) {
-      toast = getErrorMessage(error, 'Envoi du message impossible.')
+      patchState({ toast: getErrorMessage(error, 'Envoi du message impossible.') })
     } finally {
-      sendingMessage = false
+      patchState({ sendingMessage: false })
     }
   }
 
   async function handleSignUp() {
-    if (!authEmail || !authPassword || !authHandle) {
-      toast = 'Email, mot de passe et pseudo requis.'
+    const state = get(appState)
+    if (!state.authEmail || !state.authPassword || !state.authHandle) {
+      patchState({ toast: 'Email, mot de passe et pseudo requis.' })
       return
     }
 
     try {
-      authLoading = true
-      await signUpWithEmail({
-        email: authEmail.trim(),
-        password: authPassword,
-        handle: authHandle,
+      patchState({ authLoading: true })
+      await signUpUser({
+        email: state.authEmail.trim(),
+        password: state.authPassword,
+        handle: state.authHandle,
       })
-      toast = 'Compte cree. Verifie ton email si confirmation activee.'
+      patchState({ toast: 'Compte cree. Verifie ton email si confirmation activee.' })
       await hydrateApp()
-      if (currentUser) goTo('lobby')
+      if (get(appState).currentUser) goTo('lobby')
     } catch (error) {
-      toast = getErrorMessage(error, 'Inscription impossible.')
+      patchState({ toast: getErrorMessage(error, 'Inscription impossible.') })
     } finally {
-      authLoading = false
+      patchState({ authLoading: false })
     }
   }
 
   async function handleSignIn() {
-    if (!authEmail || !authPassword) {
-      toast = 'Email et mot de passe requis.'
+    const state = get(appState)
+    if (!state.authEmail || !state.authPassword) {
+      patchState({ toast: 'Email et mot de passe requis.' })
       return
     }
 
     try {
-      authLoading = true
-      await signInWithEmail({
-        email: authEmail.trim(),
-        password: authPassword,
+      patchState({ authLoading: true })
+      await signInUser({
+        email: state.authEmail.trim(),
+        password: state.authPassword,
       })
       await hydrateApp()
       goTo('lobby')
     } catch (error) {
-      toast = getErrorMessage(error, 'Connexion impossible.')
+      patchState({ toast: getErrorMessage(error, 'Connexion impossible.') })
     } finally {
-      authLoading = false
+      patchState({ authLoading: false })
     }
   }
 
   async function handleSignOut() {
-    if (signOutLoading) return
+    if (get(appState).signOutLoading) return
 
     try {
-      signOutLoading = true
-      toast = 'Deconnexion en cours...'
-      await withTimeout(signOutCurrentUser(), 5000, undefined)
-      toast = 'Deconnecte.'
+      patchState({
+        signOutLoading: true,
+        toast: 'Deconnexion en cours...',
+      })
+      await signOutUser()
+      patchState({ toast: 'Deconnecte.' })
     } catch (error) {
-      toast = getErrorMessage(error, 'Deconnexion impossible.')
+      patchState({ toast: getErrorMessage(error, 'Deconnexion impossible.') })
     } finally {
-      currentUser = null
-      myProfile = null
-      coins = 0
-      activeMatches = []
+      patchState({
+        currentUser: null,
+        myProfile: null,
+        coins: 0,
+        activeMatches: [],
+      })
       goTo('auth')
-      signOutLoading = false
+      patchState({ signOutLoading: false })
     }
   }
 
   async function saveProfile() {
-    if (!currentUser) {
+    const state = get(appState)
+    if (!state.currentUser) {
       goTo('auth')
       return
     }
 
-    const nextHandle = (profileHandle ?? '').trim().toLowerCase().replace(/[^a-z0-9_]/g, '')
+    const nextHandle = normalizeHandleInput(state.profileHandle)
     if (!nextHandle) {
-      toast = 'Pseudo invalide (a-z, 0-9, underscore).'
+      patchState({ toast: 'Pseudo invalide (a-z, 0-9, underscore).' })
       return
     }
 
-    if (nextHandle === (myProfile?.handle ?? '')) {
-      toast = 'Aucune modification a enregistrer.'
+    if (nextHandle === (state.myProfile?.handle ?? '')) {
+      patchState({ toast: 'Aucune modification a enregistrer.' })
       return
     }
 
     try {
-      profileSaving = true
-      toast = 'Enregistrement du pseudo...'
-      const updated = await updateMyProfile({ handle: nextHandle })
-      myProfile = updated
-      profileHandle = updated?.handle ?? nextHandle
-      toast = 'Profil mis a jour.'
+      patchState({
+        profileSaving: true,
+        toast: 'Enregistrement du pseudo...',
+      })
+      const updated = await saveUserProfileHandle(nextHandle)
+      patchState({
+        myProfile: updated,
+        profileHandle: updated?.handle ?? nextHandle,
+      })
+      patchState({ toast: 'Profil mis a jour.' })
       await hydrateApp()
     } catch (error) {
-      toast = getErrorMessage(error, 'Mise a jour impossible.')
+      patchState({ toast: getErrorMessage(error, 'Mise a jour impossible.') })
     } finally {
-      profileSaving = false
+      patchState({ profileSaving: false })
     }
   }
 
   async function chooseMode(card: ModeCard) {
-    if (!currentUser) {
-      toast = 'Connecte-toi pour creer une partie.'
+    if (!get(appState).currentUser) {
+      patchState({ toast: 'Connecte-toi pour creer une partie.' })
       goTo('auth')
       return
     }
@@ -615,171 +377,174 @@
     if (!card?.modeId) return
 
     try {
-      const isDuel = card.code?.includes('duel')
-      const match = isDuel
-        ? await joinOrCreateDuel({ modeId: card.modeId })
-        : await createMatch({ modeId: card.modeId })
+      const match = await startModeMatch(card)
 
-      currentMatchId = match.id
+      patchState({ currentMatchId: match.id })
       await hydrateApp(match.id)
 
-      const matchState = (match.state as string | undefined) ?? ''
-      if (isDuel && matchState === 'waiting_opponent') {
-        toast = 'Duel cree. En attente d\'un adversaire...'
+      if (match.isDuel && match.state === 'waiting_opponent') {
+        patchState({ toast: 'Duel cree. En attente d\'un adversaire...' })
       }
 
       goTo(card.route ?? 'async')
     } catch (error) {
-      toast = getErrorMessage(error, 'Impossible de creer la partie.')
+      patchState({ toast: getErrorMessage(error, 'Impossible de creer la partie.') })
     }
   }
 
   async function createDuelChallenge(card: ModeCard) {
-    if (duelLoading) return
+    const state = get(appState)
+    if (state.duelLoading) return
 
-    if (!currentUser) {
-      toast = 'Connecte-toi pour creer une partie.'
+    if (!state.currentUser) {
+      patchState({ toast: 'Connecte-toi pour creer une partie.' })
       goTo('auth')
       return
     }
 
-    if (!selectedOpponentId) {
-      toast = 'Choisis un joueur a defier.'
+    if (!state.selectedOpponentId) {
+      patchState({ toast: 'Choisis un joueur a defier.' })
       return
     }
 
     try {
-      duelLoading = true
-      const match = await createDuelInvite({
+      patchState({ duelLoading: true })
+      const match = await createDuelInvitation({
         modeId: card.modeId,
-        opponentId: selectedOpponentId,
+        opponentId: state.selectedOpponentId,
       })
 
-      currentMatchId = match.id
+      patchState({ currentMatchId: match.id })
       await hydrateApp(match.id)
-      toast = 'Invitation envoyee.'
+      patchState({ toast: 'Invitation envoyee.' })
       goTo('async')
     } catch (error) {
-      toast = getErrorMessage(error, 'Invitation impossible.')
+      patchState({ toast: getErrorMessage(error, 'Invitation impossible.') })
     } finally {
-      duelLoading = false
+      patchState({ duelLoading: false })
     }
   }
 
   async function openOrAcceptMatch(match: ActiveMatchCard) {
-    currentMatchId = match.id
-
     try {
-      if (match.state === 'waiting_opponent' && currentUser && currentUser.id !== match.createdByUserId) {
-        await acceptDuelInvite(match.id)
-      }
-
-      await hydrateApp(match.id)
+      const result = await openMatchWithAutoAccept({
+        match,
+        currentUserId: get(appState).currentUser?.id,
+      })
+      patchState({ currentMatchId: result.id })
+      await hydrateApp(result.id)
       goTo('async')
     } catch (error) {
-      toast = getErrorMessage(error, 'Impossible d\'ouvrir la partie.')
+      patchState({ toast: getErrorMessage(error, 'Impossible d\'ouvrir la partie.') })
     }
   }
 
   function canCancelMatch(match: ActiveMatchCard): boolean {
-    if (!currentUser) return false
-    if (match.createdByUserId !== currentUser.id) return false
-    return ['draft', 'active', 'waiting_turn', 'waiting_opponent'].includes(match.state)
+    return policyCanCancelMatch(match, get(appState).currentUser)
   }
 
   function canDeleteMatch(match: ActiveMatchCard): boolean {
-    if (!currentUser) return false
-    if (match.createdByUserId !== currentUser.id) return false
-    return ['completed', 'canceled', 'expired'].includes(match.state)
+    return policyCanDeleteMatch(match, get(appState).currentUser)
   }
 
   async function manageMatch(match: ActiveMatchCard, action: 'cancel' | 'delete') {
-    if (managingMatchId) return
+    if (get(appState).managingMatchId) return
 
     try {
-      managingMatchId = match.id
+      patchState({ managingMatchId: match.id })
 
-      if (action === 'cancel') {
-        await cancelMatch(match.id)
-        toast = 'Partie annulee.'
-      } else {
-        await deleteMatch(match.id)
-        if (currentMatchId === match.id) {
-          currentMatchId = null
-          guessHistory = []
-        }
-        toast = 'Partie supprimee.'
+      const result = await manageMatchLifecycle({ matchId: match.id, action })
+      const state = get(appState)
+      if (action === 'delete' && state.currentMatchId === match.id) {
+        patchState({
+          currentMatchId: null,
+          guessHistory: [],
+        })
       }
+      patchState({ toast: result.message })
 
-      await hydrateApp(currentMatchId)
+      await hydrateApp(get(appState).currentMatchId)
     } catch (error) {
-      toast = getErrorMessage(error, 'Action impossible sur la partie.')
+      patchState({ toast: getErrorMessage(error, 'Action impossible sur la partie.') })
     } finally {
-      managingMatchId = null
+      patchState({ managingMatchId: null })
     }
   }
 
   function placeAsyncPeg(peg: PalettePeg) {
-    asyncRow[asyncSlot] = peg
-    asyncRow = [...asyncRow]
-    asyncSlot = Math.min(asyncSlot + 1, asyncRow.length - 1)
+    const state = get(appState)
+    const next = placePegInRow(state.asyncRow, state.asyncSlot, peg)
+    patchState({
+      asyncRow: next.row,
+      asyncSlot: next.nextSlot,
+    })
   }
 
   function setAsyncSlot(index: number) {
-    asyncSlot = index
+    patchState({ asyncSlot: index })
   }
 
   async function submitAsyncRow() {
-    if (isSubmittingGuess) return
+    const state = get(appState)
+    if (state.isSubmittingGuess) return
 
-    if (!currentUser) {
-      toast = 'Connecte-toi pour jouer.'
-      goTo('auth')
-      return
-    }
-
-    if (!currentMatchId) {
-      toast = 'Aucune session active.'
-      return
-    }
-
-    if (asyncRow.some((peg) => !peg)) {
-      toast = 'Complete les 4 slots avant de soumettre.'
-      return
-    }
-
-    const currentMatch = activeMatches.find((match) => match.id === currentMatchId)
-    if (currentMatch && currentMatch.state === 'waiting_opponent') {
-      toast = 'En attente d\'un adversaire pour commencer le duel.'
-      return
-    }
-
-    if (currentMatch && currentMatch.state === 'completed') {
-      toast = 'Cette partie est terminee.'
-      return
-    }
-
-    if (currentMatch && guessHistory.length >= currentMatch.maxTurns) {
-      toast = 'Nombre maximum de tours atteint.'
+    const currentMatch = state.activeMatches.find((match) => match.id === state.currentMatchId)
+    const blocker = getSubmitGuessBlocker({
+      currentUser: state.currentUser,
+      currentMatchId: state.currentMatchId,
+      asyncRow: state.asyncRow,
+      currentMatch,
+      guessCount: state.guessHistory.length,
+    })
+    if (blocker) {
+      patchState({ toast: blocker })
+      if (blocker === 'Connecte-toi pour jouer.') goTo('auth')
       return
     }
 
     try {
-      isSubmittingGuess = true
-      await submitGuess({
-        matchId: currentMatchId,
-        payload: { row: asyncRow.map((peg) => peg?.symbol ?? null) },
-      })
+      patchState({ isSubmittingGuess: true })
+      await submitMatchGuessRow({ matchId: state.currentMatchId as string, row: state.asyncRow })
 
-      asyncRow = [null, null, null, null]
-      asyncSlot = 0
-      toast = ''
-      await hydrateApp(currentMatchId)
+      patchState({
+        asyncRow: emptyAsyncRow(),
+        asyncSlot: 0,
+        toast: '',
+      })
+      await hydrateApp(get(appState).currentMatchId)
     } catch (error) {
-      toast = getErrorMessage(error, 'Soumission impossible.')
+      patchState({ toast: getErrorMessage(error, 'Soumission impossible.') })
     } finally {
-      isSubmittingGuess = false
+      patchState({ isSubmittingGuess: false })
     }
+  }
+
+  function setSelectedOpponentId(opponentId: string) {
+    patchState({ selectedOpponentId: opponentId })
+  }
+
+  function setSelectedChatUserId(userId: string) {
+    patchState({ selectedChatUserId: userId })
+  }
+
+  function setChatInput(value: string) {
+    patchState({ chatInput: value })
+  }
+
+  function setAuthEmail(value: string) {
+    patchState({ authEmail: value })
+  }
+
+  function setAuthPassword(value: string) {
+    patchState({ authPassword: value })
+  }
+
+  function setAuthHandle(value: string) {
+    patchState({ authHandle: value })
+  }
+
+  function setProfileHandle(value: string) {
+    patchState({ profileHandle: value })
   }
 
 </script>
@@ -795,428 +560,108 @@
 
 <div class="hud-app">
   <div class="scanner-line"></div>
-  <header class="topbar glass-panel">
-    <div class="brand">
-      <span class="material-symbols-outlined brand-icon">terminal</span>
-      <div>
-        <p class="caption">SYSTEM</p>
-        <h1>{viewTitle[currentView]}</h1>
-      </div>
-    </div>
-    <div class="wallet-panel">
-      <span class="material-symbols-outlined">account_balance_wallet</span>
-      <strong>{coins.toLocaleString('fr-FR')} CR</strong>
-    </div>
-    <div class="topbar-actions">
-      {#if currentUser}
-        <span class="caption">Connecte: {myProfile?.handle ?? currentUser.email}</span>
-        <button type="button" class="btn btn-ghost" on:click={() => goTo('profile')}>Mon compte</button>
-        <button type="button" class="btn btn-ghost" disabled={signOutLoading} on:click={handleSignOut}>
-          {signOutLoading ? 'Deconnexion...' : 'Deconnexion'}
-        </button>
-      {:else}
-        <button type="button" class="btn btn-ghost" on:click={() => goTo('auth')}>Connexion</button>
-      {/if}
-    </div>
-  </header>
+  <TopBar
+    currentView={$appState.currentView}
+    currentUser={$appState.currentUser}
+    myProfile={$appState.myProfile}
+    coins={$appState.coins}
+    signOutLoading={$appState.signOutLoading}
+    onGoProfile={() => goTo('profile')}
+    onGoAuth={() => goTo('auth')}
+    onSignOut={handleSignOut}
+  />
 
   <main class="screen grid-layer">
-    {#if currentView === 'lobby'}
-      <section class="hero-panel glass-panel">
-        <div class="panel-tag">
-          <span class="dot"></span>
-          DEFI QUOTIDIEN
-        </div>
-        <h2>{dailyChallenge?.title ?? 'Defi indisponible'}</h2>
-        <p>{dailyChallenge?.description ?? 'Les donnees du defi quotidien seront affichees ici.'}</p>
-        <div class="hero-row">
-          <button type="button" class="btn btn-primary" on:click={() => goTo('modes')}>
-            OUVRIR SESSION
-            <span class="material-symbols-outlined">arrow_forward</span>
-          </button>
-          <div class="countdown glass-panel">
-            <small>DATE</small>
-            <strong>{dailyChallenge?.challenge_date ?? '--/--/----'}</strong>
-          </div>
-        </div>
-      </section>
-
-      <section class="section-head">
-        <h3>Mes parties</h3>
-        <button type="button" class="btn btn-ghost" on:click={() => goTo('modes')}>Voir les modes</button>
-      </section>
-
-      <section class="stack">
-        {#if isLoading}
-          <article class="empty-state glass-panel">Chargement...</article>
-        {:else if activeMatches.length === 0}
-          <article class="empty-state glass-panel">Aucune partie.</article>
-        {:else}
-          {#each activeMatches as match}
-            <article class="match-card glass-panel">
-              <div class="match-head">
-                <div>
-                  <h4>{match.name}</h4>
-                  <p>{match.mode}</p>
-                </div>
-                <span class={`status-chip ${match.status === 'En attente' ? 'status-wait' : match.status === 'Terminee' ? 'status-done' : 'status-turn'}`}>{match.status}</span>
-              </div>
-              <div class="progress-top">
-                <small>Progression</small>
-                <small>Essai {match.tries}</small>
-              </div>
-              <div class="progress"><span style={`width:${match.progress}%`}></span></div>
-              <div class="match-actions">
-                <button
-                  type="button"
-                  class="btn {match.status === 'En attente' ? 'btn-ghost' : 'btn-primary'}"
-                  on:click={() => openOrAcceptMatch(match)}
-                >
-                  {match.state === 'waiting_opponent' && currentUser && currentUser.id !== match.createdByUserId
-                    ? 'ACCEPTER'
-                    : match.status === 'En attente'
-                      ? 'WAITING'
-                      : match.status === 'Terminee'
-                        ? 'VOIR'
-                        : 'RESUME'}
-                </button>
-
-                {#if canCancelMatch(match)}
-                  <button
-                    type="button"
-                    class="btn btn-ghost"
-                    disabled={managingMatchId === match.id}
-                    on:click={() => manageMatch(match, 'cancel')}
-                  >
-                    {managingMatchId === match.id ? '...' : 'ANNULER'}
-                  </button>
-                {/if}
-
-                {#if canDeleteMatch(match)}
-                  <button
-                    type="button"
-                    class="btn btn-ghost"
-                    disabled={managingMatchId === match.id}
-                    on:click={() => manageMatch(match, 'delete')}
-                  >
-                    {managingMatchId === match.id ? '...' : 'SUPPRIMER'}
-                  </button>
-                {/if}
-              </div>
-            </article>
-          {/each}
-        {/if}
-      </section>
+    {#if $appState.currentView === 'lobby'}
+      <LobbyPanel
+        isLoading={$appState.isLoading}
+        activeMatches={$appState.activeMatches}
+        dailyChallenge={$appState.dailyChallenge}
+        currentUser={$appState.currentUser}
+        managingMatchId={$appState.managingMatchId}
+        {canCancelMatch}
+        {canDeleteMatch}
+        onOpenMatch={openOrAcceptMatch}
+        onManageMatch={manageMatch}
+        onGoToModes={() => goTo('modes')}
+      />
     {/if}
 
-    {#if currentView === 'modes'}
-      <section class="section-head intro">
-        <h3>Selection des modes</h3>
-        <p>Les modes disponibles seront affiches ici.</p>
-      </section>
-      <section class="modes-grid">
-        {#if isLoading}
-          <article class="empty-state glass-panel">Chargement...</article>
-        {:else if modeCards.length === 0}
-          <article class="empty-state glass-panel">Aucun mode publie.</article>
-        {:else}
-          {#each modeCards as card}
-            <article class={`mode-card glass-panel ${card.intense ? 'mode-card-intense' : ''}`}>
-              <div class="mode-head">
-                <span class={`mode-badge ${card.queueType === 'duel' ? 'mode-badge-duel' : 'mode-badge-solo'}`}>
-                  {card.queueType === 'duel' ? '1V1' : 'SOLO'}
-                </span>
-              </div>
-              <span class={`mode-icon tone-${card.tone}`}>
-                <span class="material-symbols-outlined">{card.icon}</span>
-              </span>
-              <h4>{card.title}</h4>
-              <p>{card.description}</p>
-
-              {#if card.queueType === 'duel'}
-                <div class="duel-controls">
-                  <label class="field-label" for="duel-opponent">Adversaire</label>
-                  <select id="duel-opponent" class="input-field" bind:value={selectedOpponentId}>
-                    {#if opponentCandidates.length === 0}
-                      <option value="">Aucun joueur disponible</option>
-                    {:else}
-                      {#each opponentCandidates as opponent}
-                        <option value={opponent.id}>{opponent.handle}</option>
-                      {/each}
-                    {/if}
-                  </select>
-                  <button
-                    type="button"
-                    class="btn btn-primary"
-                    disabled={duelLoading || opponentCandidates.length === 0}
-                    on:click={() => createDuelChallenge(card)}
-                  >
-                    {duelLoading ? 'Invitation...' : 'Defier'}
-                  </button>
-                </div>
-              {:else}
-                <button type="button" class="btn btn-primary" on:click={() => chooseMode(card)}>
-                  {card.cta} ->
-                </button>
-              {/if}
-            </article>
-          {/each}
-        {/if}
-      </section>
+    {#if $appState.currentView === 'modes'}
+      <ModesPanel
+        isLoading={$appState.isLoading}
+        modeCards={$appState.modeCards}
+        opponentCandidates={$appState.opponentCandidates}
+        selectedOpponentId={$appState.selectedOpponentId}
+        duelLoading={$appState.duelLoading}
+        onSelectOpponent={setSelectedOpponentId}
+        onCreateDuelChallenge={createDuelChallenge}
+        onChooseMode={chooseMode}
+      />
     {/if}
 
-    {#if currentView === 'async'}
-      <section class="hud-row">
-        <article class="turn-panel glass-panel">
-          <small>TOUR</small>
-          <h3>{asyncAttempt}/--</h3>
-        </article>
-        <article class="turn-panel glass-panel">
-          <small>TEMPS</small>
-          <h3 class="cyan">--:--:--</h3>
-        </article>
-      </section>
-
-      <section class="guess-history glass-panel">
-        {#if guessHistory.length > 0}
-          {#each guessHistory as guess, index}
-            <article class="guess-row board-item">
-              <small>{index + 1}</small>
-              <div class="guess-pegs">
-                {#each guess.row as value}
-                  <span class="slot history-slot">
-                    <span class={`peg peg-${toneForSymbol(value)}`}>
-                      <span class="material-symbols-outlined">{value}</span>
-                    </span>
-                  </span>
-                {/each}
-              </div>
-              <div class="mini-grid">
-                {#each feedbackDots(guess.exactHits, guess.partialHits) as dot}
-                  <span class={`feedback-dot feedback-${dot}`}></span>
-                {/each}
-              </div>
-            </article>
-          {/each}
-        {/if}
-
-        <article class="guess-row current board-item">
-          <small>{asyncAttempt}</small>
-          <div class="guess-pegs">
-            {#each asyncRow as peg, index}
-              <button
-                type="button"
-                class={`slot ${index === asyncSlot ? 'slot-active' : ''}`}
-                on:click={() => setAsyncSlot(index)}
-              >
-                {#if peg}
-                  <span class={`peg peg-${peg.tone}`}>
-                    <span class="material-symbols-outlined">{peg.symbol}</span>
-                  </span>
-                {:else}
-                  <span class="material-symbols-outlined slot-add">fiber_manual_record</span>
-                {/if}
-              </button>
-            {/each}
-          </div>
-          <div class="mini-grid">
-            <span class="feedback-dot feedback-empty"></span>
-            <span class="feedback-dot feedback-empty"></span>
-            <span class="feedback-dot feedback-empty"></span>
-            <span class="feedback-dot feedback-empty"></span>
-          </div>
-        </article>
-      </section>
-
-      <section class="legend glass-panel">
-        <h4>Lecture des petits carres</h4>
-        <p><span class="feedback-dot feedback-black"></span> noir: symbole bien place.</p>
-        <p><span class="feedback-dot feedback-white"></span> blanc: symbole present mais mal place.</p>
-        <p><span class="feedback-dot feedback-empty"></span> vide: symbole absent du code secret.</p>
-      </section>
-
-      <button type="button" class="btn btn-primary wide" disabled={isSubmittingGuess} on:click={submitAsyncRow}>
-        SOUMETTRE
-        <span class="material-symbols-outlined">arrow_forward</span>
-      </button>
-
-      <section class="picker glass-panel">
-        <div class="picker-head">
-          <h4>PALETTE</h4>
-        </div>
-        <div class="picker-grid">
-          {#each asyncPalette as peg}
-            <button type="button" class="picker-peg" on:click={() => placeAsyncPeg(peg)}>
-              <span class={`peg peg-${peg.tone}`}>
-                <span class="material-symbols-outlined">{peg.symbol}</span>
-              </span>
-            </button>
-          {/each}
-        </div>
-      </section>
+    {#if $appState.currentView === 'async'}
+      <AsyncPanel
+        asyncAttempt={$appState.asyncAttempt}
+        guessHistory={$appState.guessHistory}
+        asyncRow={$appState.asyncRow}
+        asyncSlot={$appState.asyncSlot}
+        {asyncPalette}
+        isSubmittingGuess={$appState.isSubmittingGuess}
+        onSetSlot={setAsyncSlot}
+        onPlacePeg={placeAsyncPeg}
+        onSubmitRow={submitAsyncRow}
+      />
     {/if}
 
-    {#if currentView === 'communication'}
-      <section class="section-head intro">
-        <h3>Communication</h3>
-        <p>Invitations duel et messages entre joueurs.</p>
-      </section>
-
-      <section class="account-panel glass-panel">
-        <h4>Invitations recues</h4>
-        {#if communicationLoading}
-          <article class="empty-state">Chargement...</article>
-        {:else if duelInvitations.length === 0}
-          <article class="empty-state">Aucune invitation en attente.</article>
-        {:else}
-          <div class="stack">
-            {#each duelInvitations as invite}
-              <article class="match-card glass-panel">
-                <div class="match-head">
-                  <div>
-                    <h4>{invite.mode_title}</h4>
-                    <p>Invite par {invite.inviter_handle}</p>
-                  </div>
-                  <span class="status-chip status-wait">Invitation</span>
-                </div>
-                <button type="button" class="btn btn-primary" on:click={() => acceptInvitation(invite)}>
-                  Accepter
-                </button>
-              </article>
-            {/each}
-          </div>
-        {/if}
-      </section>
-
-      <section class="account-panel glass-panel">
-        <h4>Messages prives</h4>
-        <div class="duel-controls">
-          <label class="field-label" for="chat-user">Joueur</label>
-          <select id="chat-user" class="input-field" bind:value={selectedChatUserId} on:change={refreshChatThread}>
-            {#if opponentCandidates.length === 0}
-              <option value="">Aucun joueur disponible</option>
-            {:else}
-              {#each opponentCandidates as opponent}
-                <option value={opponent.id}>{opponent.handle}</option>
-              {/each}
-            {/if}
-          </select>
-        </div>
-
-        <div class="chat-thread glass-panel">
-          {#if chatMessages.length === 0}
-            <article class="empty-state">Aucun message.</article>
-          {:else}
-            {#each chatMessages as message}
-              <article class={`chat-message ${currentUser && message.sender_user_id === currentUser.id ? 'chat-own' : 'chat-peer'}`}>
-                <p>{message.body}</p>
-                <small>{new Date(message.created_at).toLocaleString('fr-FR')}</small>
-              </article>
-            {/each}
-          {/if}
-        </div>
-
-        <div class="duel-controls">
-          <label class="field-label" for="chat-input">Message</label>
-          <textarea
-            id="chat-input"
-            class="input-field chat-input"
-            rows="3"
-            bind:value={chatInput}
-            placeholder="Ecris ton message..."
-          ></textarea>
-          <button type="button" class="btn btn-primary" disabled={sendingMessage} on:click={sendMessageToPlayer}>
-            {sendingMessage ? 'Envoi...' : 'Envoyer'}
-          </button>
-        </div>
-      </section>
+    {#if $appState.currentView === 'communication'}
+      <CommunicationPanel
+        communicationLoading={$appState.communicationLoading}
+        duelInvitations={$appState.duelInvitations}
+        opponentCandidates={$appState.opponentCandidates}
+        selectedChatUserId={$appState.selectedChatUserId}
+        chatMessages={$appState.chatMessages}
+        chatInput={$appState.chatInput}
+        onChatInputChange={setChatInput}
+        sendingMessage={$appState.sendingMessage}
+        currentUser={$appState.currentUser}
+        onAcceptInvitation={acceptInvitation}
+        onRefreshChatThread={refreshChatThread}
+        onSendMessage={sendMessageToPlayer}
+        onSelectChatUser={setSelectedChatUserId}
+      />
     {/if}
 
-    {#if currentView === 'auth'}
-      <section class="account-panel glass-panel">
-        <h3>Acces utilisateur</h3>
-        <p class="account-subtitle">Creer un compte ou se connecter pour acceder aux parties.</p>
-
-        <div class="form-grid">
-          <label class="field-label" for="auth-email">Email</label>
-          <input id="auth-email" class="input-field" type="email" bind:value={authEmail} placeholder="email@domaine.com" />
-
-          <label class="field-label" for="auth-password">Mot de passe</label>
-          <input id="auth-password" class="input-field" type="password" bind:value={authPassword} placeholder="Minimum 6 caracteres" />
-
-          <label class="field-label" for="auth-handle">Pseudo</label>
-          <input id="auth-handle" class="input-field" type="text" bind:value={authHandle} placeholder="Pseudo joueur" />
-        </div>
-
-        <div class="account-actions">
-          <button type="button" class="btn btn-primary" disabled={authLoading} on:click={handleSignIn}>Connexion</button>
-          <button type="button" class="btn btn-ghost" disabled={authLoading} on:click={handleSignUp}>Creer un compte</button>
-        </div>
-      </section>
+    {#if $appState.currentView === 'auth'}
+      <AuthPanel
+        authEmail={$appState.authEmail}
+        authPassword={$appState.authPassword}
+        authHandle={$appState.authHandle}
+        authLoading={$appState.authLoading}
+        onAuthEmailChange={setAuthEmail}
+        onAuthPasswordChange={setAuthPassword}
+        onAuthHandleChange={setAuthHandle}
+        onSignIn={handleSignIn}
+        onSignUp={handleSignUp}
+      />
     {/if}
 
-    {#if currentView === 'profile'}
-      <section class="account-panel glass-panel">
-        <h3>Mon profil</h3>
-        <p class="account-subtitle">Consulter et modifier les informations de compte.</p>
-
-        {#if !currentUser}
-          <article class="empty-state">Aucune session utilisateur.</article>
-          <div class="account-actions">
-            <button type="button" class="btn btn-primary" on:click={() => goTo('auth')}>Se connecter</button>
-          </div>
-        {:else}
-          <div class="profile-grid">
-            <div>
-              <div class="field-label">User ID</div>
-              <div class="readonly-value">{currentUser.id}</div>
-            </div>
-            <div>
-              <div class="field-label">Email</div>
-              <div class="readonly-value">{currentUser.email ?? 'N/A'}</div>
-            </div>
-          </div>
-
-          <div class="form-grid">
-            <label class="field-label" for="profile-handle">Pseudo</label>
-            <input id="profile-handle" class="input-field" type="text" bind:value={profileHandle} placeholder="Pseudo joueur" />
-          </div>
-
-          <div class="account-actions">
-            <button type="button" class="btn btn-primary" disabled={profileSaving} on:click={saveProfile}>
-              {profileSaving ? 'Enregistrement...' : 'Enregistrer'}
-            </button>
-            <button type="button" class="btn btn-ghost" on:click={() => goTo('lobby')}>Retour lobby</button>
-          </div>
-        {/if}
-      </section>
+    {#if $appState.currentView === 'profile'}
+      <ProfilePanel
+        currentUser={$appState.currentUser}
+        profileHandle={$appState.profileHandle}
+        profileSaving={$appState.profileSaving}
+        onProfileHandleChange={setProfileHandle}
+        onSaveProfile={saveProfile}
+        onGoAuth={() => goTo('auth')}
+        onGoLobby={() => goTo('lobby')}
+      />
     {/if}
 
-    {#if toast}
-      <p class="toast">{toast}</p>
+    {#if $appState.toast}
+      <p class="toast">{$appState.toast}</p>
     {/if}
   </main>
 
-  <nav class="bottom-nav">
-    <button type="button" class={currentView === 'lobby' ? 'active' : ''} on:click={() => goTo('lobby')}>
-      <span class="material-symbols-outlined">videogame_asset</span>
-      <span>Lobby</span>
-    </button>
-    <button type="button" class={currentView === 'modes' ? 'active' : ''} on:click={() => goTo('modes')}>
-      <span class="material-symbols-outlined">extension</span>
-      <span>Modes</span>
-    </button>
-    <button type="button" class={currentView === 'async' ? 'active' : ''} on:click={() => goTo('async')}>
-      <span class="material-symbols-outlined">history</span>
-      <span>Logs</span>
-    </button>
-    <button type="button" class={currentView === 'communication' ? 'active' : ''} on:click={() => goTo('communication')}>
-      <span class="material-symbols-outlined">forum</span>
-      <span>Comms</span>
-    </button>
-    <button type="button" class={currentView === 'profile' || currentView === 'auth' ? 'active' : ''} on:click={() => goTo(currentUser ? 'profile' : 'auth')}>
-      <span class="material-symbols-outlined">person</span>
-      <span>Compte</span>
-    </button>
-  </nav>
+  <BottomNav currentView={$appState.currentView} currentUser={$appState.currentUser} onGoTo={goTo} />
 </div>

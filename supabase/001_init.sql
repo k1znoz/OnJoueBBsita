@@ -544,11 +544,6 @@ begin
   values (v_match.id, v_uid, 1, true)
   on conflict (match_id, user_id) do nothing;
 
-  insert into public.duel_secret_codes (match_id, owner_user_id, secret_payload, is_locked)
-  values (v_match.id, v_uid, to_jsonb(v_secret_symbols), true)
-  on conflict (match_id, owner_user_id)
-  do update set secret_payload = excluded.secret_payload, is_locked = true, updated_at = now();
-
   return v_match;
 end;
 $$;

@@ -2,6 +2,7 @@
   import { feedbackDots, toneForSymbol } from '../../model/mappers'
   import type { DuelGuessEntry, GuessHistoryEntry, PalettePeg } from '../../model/types'
 
+  export let isDuelMatch = false
   export let asyncAttempt = 1
   export let guessHistory: GuessHistoryEntry[] = []
   export let asyncRow: Array<PalettePeg | null> = []
@@ -51,94 +52,96 @@
 </script>
 
 <section class="duel-screen">
-  <section class="role-block role-coder glass-panel">
-    <header class="role-head">
-      <div class="role-title">
-        <span class="role-dot role-dot-coder"></span>
-        <h3>Codeur</h3>
-      </div>
-      <small>Opposant: {opponentSecretReady ? 'pret' : 'en attente'}</small>
-    </header>
+  {#if isDuelMatch}
+    <section class="role-block role-coder glass-panel">
+      <header class="role-head">
+        <div class="role-title">
+          <span class="role-dot role-dot-coder"></span>
+          <h3>Codeur</h3>
+        </div>
+        <small>Opposant: {opponentSecretReady ? 'pret' : 'en attente'}</small>
+      </header>
 
-    <article class="stack-card secret-card">
-      <div class="row-between">
-        <p class="card-label">Votre code secret</p>
-        <button
-          type="button"
-          class="btn-lock"
-          disabled={mySecretReady || isSubmittingSecret}
-          on:click={onSubmitSecret}
-        >
-          {isSubmittingSecret ? 'Verrouillage...' : mySecretReady ? 'Code verrouille' : 'Verrouiller le code'}
-        </button>
-      </div>
-
-      <div class="slots-row">
-        {#each secretRow as peg, index}
+      <article class="stack-card secret-card">
+        <div class="row-between">
+          <p class="card-label">Votre code secret</p>
           <button
             type="button"
-            class={`slot ${index === secretSlot ? 'slot-active' : ''}`}
-            on:click={() => onSetSecretSlot(index)}
+            class="btn-lock"
             disabled={mySecretReady || isSubmittingSecret}
+            on:click={onSubmitSecret}
           >
-            {#if peg}
+            {isSubmittingSecret ? 'Verrouillage...' : mySecretReady ? 'Code verrouille' : 'Verrouiller le code'}
+          </button>
+        </div>
+
+        <div class="slots-row">
+          {#each secretRow as peg, index}
+            <button
+              type="button"
+              class={`slot ${index === secretSlot ? 'slot-active' : ''}`}
+              on:click={() => onSetSecretSlot(index)}
+              disabled={mySecretReady || isSubmittingSecret}
+            >
+              {#if peg}
+                <span class={`peg peg-${peg.tone}`}>
+                  <span class="material-symbols-outlined">{peg.symbol}</span>
+                </span>
+              {:else}
+                <span class="material-symbols-outlined slot-add">add</span>
+              {/if}
+            </button>
+          {/each}
+        </div>
+
+        <div class="palette-inline">
+          {#each asyncPalette as peg}
+            <button
+              type="button"
+              class="palette-key"
+              disabled={mySecretReady || isSubmittingSecret}
+              on:click={() => onPlaceSecretPeg(peg)}
+            >
               <span class={`peg peg-${peg.tone}`}>
                 <span class="material-symbols-outlined">{peg.symbol}</span>
               </span>
-            {:else}
-              <span class="material-symbols-outlined slot-add">add</span>
-            {/if}
-          </button>
-        {/each}
-      </div>
-
-      <div class="palette-inline">
-        {#each asyncPalette as peg}
-          <button
-            type="button"
-            class="palette-key"
-            disabled={mySecretReady || isSubmittingSecret}
-            on:click={() => onPlaceSecretPeg(peg)}
-          >
-            <span class={`peg peg-${peg.tone}`}>
-              <span class="material-symbols-outlined">{peg.symbol}</span>
-            </span>
-          </button>
-        {/each}
-      </div>
-    </article>
-
-    <article class="stack-card history-card">
-      <div class="row-between">
-        <p class="card-label">Essais adverses</p>
-      </div>
-
-      {#if opponentDuelGuesses.length === 0}
-        <p class="history-empty">Aucun essai adverse.</p>
-      {:else}
-        <div class="history-list">
-          {#each opponentDuelGuesses as guess}
-            <article class="history-row">
-              <div class="mini-pegs">
-                {#each guess.row as value}
-                  <span class="mini-peg-wrap">
-                    <span class={`peg peg-${toneForSymbol(value)}`}>
-                      <span class="material-symbols-outlined">{value}</span>
-                    </span>
-                  </span>
-                {/each}
-              </div>
-              <div class="mini-grid">
-                {#each feedbackDots(guess.exactHits, guess.partialHits) as dot}
-                  <span class={`feedback-dot feedback-${dot}`}></span>
-                {/each}
-              </div>
-            </article>
+            </button>
           {/each}
         </div>
-      {/if}
-    </article>
-  </section>
+      </article>
+
+      <article class="stack-card history-card">
+        <div class="row-between">
+          <p class="card-label">Essais adverses</p>
+        </div>
+
+        {#if opponentDuelGuesses.length === 0}
+          <p class="history-empty">Aucun essai adverse.</p>
+        {:else}
+          <div class="history-list">
+            {#each opponentDuelGuesses as guess}
+              <article class="history-row">
+                <div class="mini-pegs">
+                  {#each guess.row as value}
+                    <span class="mini-peg-wrap">
+                      <span class={`peg peg-${toneForSymbol(value)}`}>
+                        <span class="material-symbols-outlined">{value}</span>
+                      </span>
+                    </span>
+                  {/each}
+                </div>
+                <div class="mini-grid">
+                  {#each feedbackDots(guess.exactHits, guess.partialHits) as dot}
+                    <span class={`feedback-dot feedback-${dot}`}></span>
+                  {/each}
+                </div>
+              </article>
+            {/each}
+          </div>
+        {/if}
+      </article>
+    </section>
+  {/if}
 
   <section class="role-block role-decoder glass-panel">
     <header class="role-head">
@@ -146,7 +149,7 @@
         <span class="role-dot role-dot-decoder"></span>
         <h3>Decodeur</h3>
       </div>
-      <small>Tentative {asyncAttempt}/10</small>
+      <small>{isDuelMatch ? `Tentative ${asyncAttempt}/10` : 'Mode solo: code IA actif'}</small>
     </header>
 
     <article class="stack-card history-card decoder-history">

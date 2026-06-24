@@ -101,8 +101,12 @@
 
   async function loadMatchHistory(matchId: string | null) {
     try {
+      const state = get(appState)
+      const currentMatch = state.activeMatches.find((match) => match.id === matchId)
+      const isDuelMatch = currentMatch?.queueType === 'duel'
+
       const historyData = await fetchGuessHistoryData(matchId, get(appState).currentUser)
-      const board = matchId ? await fetchMatchDuelBoard(matchId) : null
+      const board = matchId && isDuelMatch ? await fetchMatchDuelBoard(matchId) : null
       patchState({
         guessHistory: historyData.guessHistory,
         asyncAttempt: historyData.asyncAttempt,
@@ -515,6 +519,12 @@
     const state = get(appState)
     if (state.isSubmittingSecret || state.mySecretReady) return
 
+    const currentMatch = state.activeMatches.find((match) => match.id === state.currentMatchId)
+    if (currentMatch?.queueType !== 'duel') {
+      patchState({ toast: 'Le codeur manuel est reserve au mode duel.' })
+      return
+    }
+
     if (!state.currentMatchId) {
       patchState({ toast: 'Aucune session active.' })
       return
@@ -560,7 +570,7 @@
 
     try {
       patchState({ isSubmittingGuess: true })
-      if (state.opponentSecretReady) {
+      if (currentMatch?.queueType === 'duel') {
         await submitDuelGuessRow({ matchId: state.currentMatchId as string, row: state.asyncRow })
       } else {
         await submitMatchGuessRow({ matchId: state.currentMatchId as string, row: state.asyncRow })
@@ -662,6 +672,7 @@
 
     {#if $appState.currentView === 'async'}
       <AsyncPanel
+        isDuelMatch={$appState.activeMatches.find((match) => match.id === $appState.currentMatchId)?.queueType === 'duel'}
         asyncAttempt={$appState.asyncAttempt}
         guessHistory={$appState.guessHistory}
         asyncRow={$appState.asyncRow}

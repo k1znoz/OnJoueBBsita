@@ -52,6 +52,7 @@ export function buildModeCards(modes: GameModeRow[]): ModeCard[] {
 
 export function buildActiveMatches(matches: Array<MatchRow | MatchRow[]>, modes: GameModeRow[]): ActiveMatchCard[] {
   const modeById = new Map((modes ?? []).map((mode) => [mode.id, mode.title]))
+  const modeCodeById = new Map((modes ?? []).map((mode) => [mode.id, mode.code]))
 
   const normalizedMatches = (matches ?? [])
     .map((match) => (Array.isArray(match) ? match[0] : match))
@@ -68,6 +69,7 @@ export function buildActiveMatches(matches: Array<MatchRow | MatchRow[]>, modes:
       id: match.id,
       name: `Partie ${match.id.slice(0, 8)}`,
       mode: modeById.get(match.mode_id) ?? 'Mode',
+      queueType: (modeCodeById.get(match.mode_id) ?? '').includes('duel') ? 'duel' : 'solo',
       tries: `${turnNumber}/${maxTurns}`,
       progress,
       status: isDone ? 'Terminee' : isWaiting ? 'En attente' : 'A votre tour',

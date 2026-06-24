@@ -43,6 +43,7 @@ export type ActiveMatchCard = {
   id: string
   name: string
   mode: string
+  queueType: 'solo' | 'duel'
   tries: string
   progress: number
   status: 'En attente' | 'A votre tour' | 'Terminee'

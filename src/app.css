@@ -833,6 +833,47 @@ textarea {
   letter-spacing: 0.1em;
 }
 
+.picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.picker-targets {
+  display: inline-flex;
+  border: 1px solid rgba(255, 191, 0, 0.25);
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.picker-target {
+  border: 0;
+  border-right: 1px solid rgba(255, 191, 0, 0.2);
+  background: transparent;
+  color: var(--text-dim);
+  padding: 6px 10px;
+  font-family: 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.picker-target:last-child {
+  border-right: 0;
+}
+
+.picker-target.active {
+  background: rgba(255, 191, 0, 0.16);
+  color: var(--amber-soft);
+}
+
+.picker-target:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .picker-grid {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));

@@ -21,6 +21,29 @@
   export let onPlaceSecretPeg: (peg: PalettePeg) => void
   export let onSubmitSecret: () => void
   export let onSubmitRow: () => void
+
+  let activePickerTarget: 'secret' | 'guess' = 'secret'
+
+  function selectGuessSlot(index: number) {
+    activePickerTarget = 'guess'
+    onSetSlot(index)
+  }
+
+  function selectSecretSlot(index: number) {
+    activePickerTarget = 'secret'
+    onSetSecretSlot(index)
+  }
+
+  function placeFromPalette(peg: PalettePeg) {
+    const canEditSecret = !mySecretReady
+
+    if (activePickerTarget === 'secret' && canEditSecret) {
+      onPlaceSecretPeg(peg)
+      return
+    }
+
+    onPlacePeg(peg)
+  }
 </script>
 
 <section class="legend glass-panel">
@@ -33,7 +56,7 @@
         <button
           type="button"
           class={`slot ${index === secretSlot ? 'slot-active' : ''}`}
-          on:click={() => onSetSecretSlot(index)}
+          on:click={() => selectSecretSlot(index)}
           disabled={mySecretReady || isSubmittingSecret}
         >
           {#if peg}
@@ -60,16 +83,34 @@
 <section class="picker glass-panel picker-secret">
   <div class="picker-head">
     <h4>PALETTE</h4>
+    <div class="picker-targets" role="group" aria-label="Cible de la palette">
+      <button
+        type="button"
+        class={`picker-target ${activePickerTarget === 'secret' ? 'active' : ''}`}
+        disabled={mySecretReady}
+        on:click={() => {
+          activePickerTarget = 'secret'
+        }}
+      >
+        Code secret
+      </button>
+      <button
+        type="button"
+        class={`picker-target ${activePickerTarget === 'guess' ? 'active' : ''}`}
+        on:click={() => {
+          activePickerTarget = 'guess'
+        }}
+      >
+        Essai
+      </button>
+    </div>
   </div>
   <div class="picker-grid">
     {#each asyncPalette as peg}
       <button
         type="button"
         class="picker-peg"
-        on:click={() => {
-          onPlacePeg(peg)
-          if (!mySecretReady) onPlaceSecretPeg(peg)
-        }}
+        on:click={() => placeFromPalette(peg)}
       >
         <span class={`peg peg-${peg.tone}`}>
           <span class="material-symbols-outlined">{peg.symbol}</span>
@@ -120,7 +161,7 @@
         <button
           type="button"
           class={`slot ${index === asyncSlot ? 'slot-active' : ''}`}
-          on:click={() => onSetSlot(index)}
+          on:click={() => selectGuessSlot(index)}
         >
           {#if peg}
             <span class={`peg peg-${peg.tone}`}>

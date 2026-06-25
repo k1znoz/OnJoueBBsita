@@ -82,6 +82,42 @@
     patchState({ toast: message })
   }
 
+  function resolveAsyncOutcome(state: AppState, currentMatch: ActiveMatchCard | undefined): 'win' | 'loss' | 'draw' | null {
+    if (!currentMatch || currentMatch.state !== 'completed') return null
+
+    const myWin =
+      currentMatch.queueType === 'duel'
+        ? state.myDuelGuesses.some((guess) => guess.isWin)
+        : state.guessHistory.some((guess) => guess.isWin)
+
+    if (myWin) return 'win'
+
+    if (currentMatch.queueType === 'duel' && state.opponentDuelGuesses.some((guess) => guess.isWin)) {
+      return 'loss'
+    }
+
+    return 'draw'
+  }
+
+  async function replayCurrentMode() {
+    const state = get(appState)
+    const currentMatch = getCurrentMatch(state)
+    if (!currentMatch) {
+      setToast(APP_MESSAGES.matchRequired)
+      goTo('modes')
+      return
+    }
+
+    const mode = state.modeCards.find((card) => card.modeId === currentMatch.modeId)
+    if (!mode) {
+      setToast('Mode introuvable. Retour aux modes.')
+      goTo('modes', { preserveToast: true })
+      return
+    }
+
+    await chooseMode(mode)
+  }
+
   onMount(() => {
     hydrateApp()
 
@@ -638,8 +674,11 @@
     {/if}
 
     {#if $appState.currentView === 'async'}
+      {@const currentAsyncMatch = $appState.activeMatches.find((match) => match.id === $appState.currentMatchId)}
       <AsyncPanel
-        isDuelMatch={$appState.activeMatches.find((match) => match.id === $appState.currentMatchId)?.queueType === 'duel'}
+        isDuelMatch={currentAsyncMatch?.queueType === 'duel'}
+        matchState={currentAsyncMatch?.state ?? null}
+        matchOutcome={resolveAsyncOutcome($appState, currentAsyncMatch)}
         asyncAttempt={$appState.asyncAttempt}
         guessHistory={$appState.guessHistory}
         asyncRow={$appState.asyncRow}
@@ -659,6 +698,7 @@
         onPlaceSecretPeg={placeSecretPeg}
         onSubmitSecret={submitSecretRow}
         onSubmitRow={submitAsyncRow}
+        onReplay={replayCurrentMode}
       />
     {/if}
 

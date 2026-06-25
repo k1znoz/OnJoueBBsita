@@ -73,6 +73,7 @@ export function buildActiveMatches(matches: Array<MatchRow | MatchRow[]>, modes:
 
     return {
       id: match.id,
+      modeId: match.mode_id,
       name: `Partie ${match.id.slice(0, 8)}`,
       mode: modeById.get(match.mode_id) ?? 'Mode',
       queueType: isDuelMode(modeByIdFull.get(match.mode_id) ?? { code: '', title: '' }) ? 'duel' : 'solo',

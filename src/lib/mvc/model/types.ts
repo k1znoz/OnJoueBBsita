@@ -41,6 +41,7 @@ export type MatchRow = {
 
 export type ActiveMatchCard = {
   id: string
+  modeId: string
   name: string
   mode: string
   queueType: 'solo' | 'duel'
